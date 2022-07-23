@@ -1,7 +1,7 @@
 # BinomoTradeBot
 Binomo auto trade bot using python datascience
 
-<iframe width="560" height="315" src="https://www.youtube.com/embed/saiipMzS1Ug" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+[![VIDEO]([https://img.youtube.com/vi/YOUTUBE_VIDEO_ID_HERE/0.jpg)](https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEg-OJePIVmVx1056mg9wN76b2kJh84klKqFrKXafYVIN89DzhQEp3QQSoOgKBAcRHgMoVSLpu8u-9svvYq3oK-p5fz35FBFC0atMaFG1sOm-AiuwVR7u6uYVFKciWiYwddmsXnUxh3OyX0uAMK2THNTUEDTYFKfdHtDNk2d-Azf4jwph0bbmA7CFXveog/s1304/Jepretan%20Layar%202022-07-24%20pukul%2003.49.45.png)](https://www.youtube.com/watch?v=saiipMzS1Ug)
 
 # Package dependency
 
