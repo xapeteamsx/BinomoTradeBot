@@ -1,5 +1,5 @@
 # BinomoTradeBot
-Binomo auto trade using python datascience
+Binomo auto trade bot using python datascience
 
 # Package dependency
 
