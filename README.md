@@ -12,3 +12,7 @@ For purchasing this script please send us $100 BUSD to BSC wallet address 0xf471
 # Package
 
 $100 USD VPS per month running 24 hours + $100 USD onetime script purchase and get FREE lifetime code updates and trading strategy
+
+# Contact
+
+t.me/apeteams
