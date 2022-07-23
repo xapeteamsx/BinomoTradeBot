@@ -361,11 +361,11 @@ class Binongtot(object):
 
             if ema8cross50_up == True and status_open == False and param_up == True:
                 print("EMA8 cross EMA50, wait for confirmation...")
-                self.setEMA8BBUp(True)
+                self.setEMA8cross50Up(True)
 
             if ema8cross50_down == True and status_open == False and param_down == True:
                 print("EMA8 cross EMA50, wait for confirmation...")
-                self.setEMA8BBDown(True)
+                self.setEMA8cross50Down(True)
 
             if self.getMACDUp() == True and validate_macd_crossed_up == True and status_open == False and ctr > set_ctr_exec and param_up == True: 
                 msg = "⬆️ [[{}]] [[WS]] [[MACD-1m-UP]] potentially BUY [[33011]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))
