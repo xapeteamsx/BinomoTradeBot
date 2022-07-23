@@ -1,899 +1,911 @@
 #!/usr/bin/python3
-import numpy as np
-import websocket
+import asyncio, websockets, ssl
 import time
-import json
 import pandas as pd
-import pandas_ta as ta
 from datetime import datetime, timezone, timedelta
+import json
 import dateutil, calendar
-import matplotlib.pyplot as plt
+from tapy import Indicators
+from DataHistory import Ticker
+import ClientConsole as cc
 from telethon import TelegramClient
 import requests
-from tapy import Indicators
-import plotly.offline as py
-import plotly.tools as tls
-from plotly.subplots import make_subplots
-import plotly.graph_objects as go
-from EMA28Fractal import EMA_14_28
-import ClientConsole as cc
+import logging
 
-# telegram bot channel
-botToken = 'XXXXXXX'
-gchatId = 'XXXXXXX'
+class Binongtot(object):
+    def __init__(self):
+        self._aw_conn = None
+        self._depth = 0
+        self.df = pd.DataFrame(columns=['Datetime','rate', 'precision', 'repeat', 'ask', 'created_at','bid', 'spread','volume'])
+        self.newdf = pd.DataFrame(columns=['Datetime','rate', 'precision', 'repeat', 'ask', 'created_at','bid', 'ric','spread','volume'])
+        self.response = {}
+        self.counter = 0
+        self.loop_socket = 0
+        self.assetConf = self.get_asset()
+        self.deviceId = self.assetConf["deviceId"]
+        self.authToken = self.assetConf["authToken"]
+        self.assetRic = self.assetConf["assetRic"]
+        self.currency = self.assetConf["currency"]
+        self.uagent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/103.0.0.0 Safari/537.36"        
+        self.bid_price = 10
+        self.lowbid = 5
+        self.val_support = []
+        self.val_resistance = []
+        self.state_val_support = []
+        self.state_val_resistance = []
+        self.ctr_minute = 1
+        self.fr_sigbuy = False
+        self.fr_sigsel = False
+        self.msg_buy = ""
+        self.msg_sell = ""        
+        self.latest_balance = 0
+        self.last_cci_c1 = 0
+        self.last_cci_c2 = 0
+        self.cci = 0
+        self.last_cond_below_support = False
+        self.last_cond_below_resistance = False
+        self.is_open_position = False
+        self.is_macd_crossed = False
+        self.last_macd_signal = 0
+        self.last_macd_value = 0
+        self.is_breakout = False
+        self.is_breakdown = False
+        self.cci_up = False
+        self.cci_down = False
+        self.is_fractal_up = False
+        self.is_fractal_down = False
+        self.is_ema8_up = False
+        self.is_ema8_down = False
+        self.is_macd_up = False
+        self.is_macd_down = False
+        self.is_reversal_up = False
+        self.is_reversal_down = False
+        self.ema8midbb_up = False
+        self.ema8midbb_down = False
+        self.is_ema8_cross50_up = False
+        self.is_ema8_cross50_down = False
 
-try:
-    import thread
-except ImportError:
-    import _thread as thread
 
-f = open("webSocketTester.log", "a")
+        # set time and timezone
+        timezone_offset = +7.0 
+        self.tzinfo = timezone(timedelta(hours=timezone_offset))
+        dtb = datetime.now(self.tzinfo)
+        presentDate = dtb + timedelta(minutes=+1)
+        self.curr_now = presentDate.strftime('%H:%M')
+        self.lasttime = ""
+        present_utc = datetime.now()
+        utc_present = present_utc + timedelta(hours=-7) + timedelta(minutes=+1)
+        self.curr_utc = utc_present.strftime('%H:%M')
 
-pd.set_option("display.precision", 12)
+        # setup telegram bot
+        self.botToken = '' # your telegram bot token
+        self.gchatId = '' # your channel id
+        
+        self.tempbin = self.getOnlineData()
+        self.pollHost = "wss://as.binomo.com/"
+        self.cookie = "l=; authtoken="+self.authToken+"; device_id="+self.deviceId+"; device_type=web"
+        self.headers = {'User-Agent': self.uagent, 'Cookie': self.cookie}
 
-df = pd.DataFrame(columns=['Datetime','rate', 'precision', 'repeat', 'ask', 'created_at','bid', 'ric','spread','volume'])
-newdf = pd.DataFrame(columns=['Datetime','rate', 'precision', 'repeat', 'ask', 'created_at','bid', 'ric','spread','volume'])
+        self.pb = cc.Placebid()
 
-timezone_offset = +7.0  # Pacific Standard Time (UTC−08:00)
-tzinfo = timezone(timedelta(hours=timezone_offset))
+        '''
+        logger = logging.getLogger('websockets')
+        logger.setLevel(logging.DEBUG)
+        logger.addHandler(logging.StreamHandler())        
+        '''
 
-pesan_sell_lama = ""
-pesan_buy_lama = ""
+    async def __aenter__(self):
+        # create a connection *if not already established*
+        if self._aw_conn is None:
+            self._aw_conn = await websockets.connect(self.pollHost,ssl=ssl.SSLContext(protocol=ssl.PROTOCOL_TLS))
+            self._depth = 0
+        self._depth += 1
+        return self._aw_conn
 
-msg_sell_adx = ""
-msg_buy_adx = ""
+    async def __aexit__(self, *exc_info):
+        self._depth -= 1
+        if self._depth < 1:
+            # close the connection
+            await self._aw_conn.close()
+            self._aw_conn = None
+            self._depth = 0
 
-last_buy_val = 0
-last_sell_val = 0
-aa = 0
-msg = ""
-pcounter = 0
-ccounter = 0
-hcounter = 0
-dev_counter = 0
-counter_ping = 300
-timeleft = 0
+    async def main(self):
+        async with self as websocket:
+            self.connect()
 
-loop_socket = 20
+    async def createDataframe(self, data):
+        tempdata = {}
+        rates = []
+        self.loop_socket+=1
+        dtt = datetime.now(self.tzinfo)
+        wibtime = dtt.strftime('%H:%M')
+        charttime = dtt.strftime('%Y-%m-%d %H:%M:00')
 
-last_signal = ""
-val_signal = 0
-waktu_lalu = ""
-last_signal_code = ""
-reformatted_data = []
+        data.index = pd.to_datetime(data.Datetime)
+        df1 = data['rate'].resample('1Min').agg(
+                                    {'open': 'first', 
+                                     'high': 'max', 
+                                     'low': 'min', 
+                                     'close': 'last'})
+        
+        d1 = pd.DataFrame(df1).reset_index()
+        d1.columns = ['Datetime','open', 'high','low','close']  
 
-win_status = False
-latest_balance = 0
-cycle = 1
-last_amount = 0
+        self.counter = int(data["created_at"][-1].split(":")[-1].split(".")[0])
+        print("xctr -> ", self.counter)
+        curr_close = 0
+        current_price = 0
+        curopen = 0
 
-maxlow = []
-maxhigh = []
-timex = ""
+        if self.counter == 0:
+            curr_close = df1['close'][-1]        
+        elif self.counter == 1:        
+            curopen = df1['open'][-1]
+        else:
+            curr_close = df1['close'][-1]
+            curopen = df1['open'][-1]
+            current_price = df1['close'][-1]
+        
+        self.mergeDataWSOnline(self.counter, d1)
 
-def on_message(ws, message):
-    global df, timex
-    try:    
-        msg = json.loads(message)    
-        if msg["data"][0]["assets"]:
+    def mergeDataWSOnline(self, ctr, wsdata):        
+
+        counter = ctr
+        tempdata = {}
+        historydata = []
+        pd.set_option('display.float_format', '{:.11f}'.format)        
+        wsdata = wsdata.set_index('Datetime')
+        curr_open = wsdata['open'][-1]
+        cur_digits = str(curr_open).split('.')
+        count_lencur = len(cur_digits[1])
+        dtb = datetime.now(self.tzinfo)
+        present_utc = datetime.now()
+        #unix_timestamp = dtb.timestamp(presentDate)*1000
+        presentDate = dtb + timedelta(minutes=+1)
+        timesx = presentDate.strftime('%H:%M')
+
+        present_utc = datetime.now()
+        utc_present = present_utc + timedelta(hours=-7) + timedelta(minutes=+1)
+        timesx_utc = utc_present.strftime('%H:%M')
+        temp_dfol = self.tempbin["d1"]
+
+        # merge websocket data with one-day history data
+        df_ws = pd.DataFrame(wsdata, columns=['open', 'high', 'low','close'])
+        wsdata_copy = df_ws.rename(columns = {'open':'Open', 'high':'High', 'low':'Low', 'close':'Close'})
+        wsdata_copy['Datetime'] = pd.to_datetime(wsdata_copy.index) + timedelta(minutes=1)
+        temp_dfol['Datetime'] = pd.to_datetime(temp_dfol.Datetime)
+        wsdata_copy.index = wsdata_copy['Datetime'] 
+        temp_dfol['Datetime'] = temp_dfol['Datetime'].dt.strftime('%Y-%m-%d %H:%M:%S')
+        vol_copy = (wsdata_copy['High'] - wsdata_copy['Low']) - (wsdata_copy['Open'] - wsdata_copy['Close'])
+        wsdata_copy['Volume'] = vol_copy
+
+        # dropping last 1 row to avoid duplicate
+        temp_dfol = temp_dfol.iloc[:-1]
+
+        merge_ws_dataonline = pd.concat([temp_dfol, wsdata_copy]).drop_duplicates()
+        merge_ws_dataonline.index = pd.to_datetime(merge_ws_dataonline.Datetime)
+        merge_ws_dataonline["Volume"] = merge_ws_dataonline.Volume * (10 ** count_lencur)
+        
+        self.my_strategy(ctr, merge_ws_dataonline, count_lencur, wsdata)
+
+    # you can customize your trading strategy
+    def my_strategy(self, ctr, merge_ws_dataonline, count_lencur, wsdata):
+
+        dtb = datetime.now(self.tzinfo)
+        present_utc = datetime.now()
+        presentDate = dtb + timedelta(minutes=+1)
+        timesx = presentDate.strftime('%H:%M')
+
+        present_utc = datetime.now()
+        utc_present = present_utc + timedelta(hours=-7) + timedelta(minutes=+1)
+        timesx_utc = utc_present.strftime('%H:%M')
+        
+        curr_high = merge_ws_dataonline['High'][-1]
+        curr_low = merge_ws_dataonline['Low'][-1]
+        curr_open = merge_ws_dataonline['Open'][-1]
+        curr_price = merge_ws_dataonline['Close'][-1]
+        op1 = merge_ws_dataonline['Open'].shift(1)[-1]
+        cl1 = merge_ws_dataonline['Close'].shift(1)[-1]
+        cl2 = merge_ws_dataonline['Close'].shift(2)[-1]
+        cl3 = merge_ws_dataonline['Close'].shift(3)[-1]
+        cl4 = merge_ws_dataonline['Close'].shift(4)[-1]
+        hc1 = merge_ws_dataonline['High'].shift(1)[-1]
+        hc2 = merge_ws_dataonline['High'].shift(2)[-1]
+        hc3 = merge_ws_dataonline['High'].shift(3)[-1]
+        hc4 = merge_ws_dataonline['High'].shift(4)[-1]
+        lc1 = merge_ws_dataonline['Low'].shift(1)[-1]
+        lc2 = merge_ws_dataonline['Low'].shift(2)[-1]
+        lc3 = merge_ws_dataonline['Low'].shift(3)[-1]
+        lc4 = merge_ws_dataonline['Low'].shift(4)[-1]
+
+        ind = Indicators(merge_ws_dataonline)
+        ind.fractals(column_name_high='fractals_high', column_name_low='fractals_low')
+        ind.bollinger_bands()
+        ind.ema(period=8, column_name='ema8', apply_to='Close')        
+        ind.ema(period=20, column_name='ema20', apply_to='Close')
+        ind.ema(period=50, column_name='ema50', apply_to='Close')
+        ind.macd(period_fast=12, period_slow=26, period_signal=9, column_name_value='macd_value', column_name_signal='macd_signal')                
+        ind.cci()
+        
+        dof = ind.df
+
+        print("dof -> ", dof.tail(10))        
+        macd_value = dof['macd_value'][-1]
+        macd_signal = dof['macd_signal'][-1]    
+
+        self.last_macd_value = dof['macd_value'].shift(1)[-1]
+        self.last_macd_signal = dof['macd_signal'].shift(1)[-1]
+
+        boltop = dof['bollinger_top'][-1]
+        bolmid = dof['bollinger_mid'][-1]
+        past_bolmid = dof['bollinger_mid'].shift(1)[-1]
+        boltom = dof['bollinger_bottom'][-1]
+ 
+        self.cci = dof['cci'][-1]
+        self.last_cci_c1 = dof['cci'].shift(1)[-1]
+        self.last_cci_c2 = dof['cci'].shift(2)[-1]
+
+        fhi = dof['fractals_high'].shift(2)[-1]
+        flo = dof['fractals_low'].shift(2)[-1]
+        
+        print("fhi -> ", fhi)
+        print("flo -> ", flo)
+
+        if(fhi == True):
+            vhi = dof['High'].shift(2)[-1]
+            if len(self.val_resistance) > 0:
+                if vhi != self.val_resistance[-1]:
+                    self.val_resistance.append(vhi)
+                    self.state_val_resistance.append(1)
+                    self.state_val_support.append(0)                    
+            else:
+                self.val_resistance.append(vhi)
+                self.state_val_resistance.append(1)
+                self.state_val_support.append(0)
+
+            self.fr_sigsel = True
+            self.fr_sigbuy = False
+        else:
+            self.state_val_resistance.append(0)
+            self.state_val_support.append(0)
+
+
+        if(flo == True):
+            vlo = dof['Low'].shift(2)[-1]
+            if len(self.val_support) > 0:
+                if vlo != self.val_support[-1]:
+                    self.val_support.append(vlo)
+                    self.state_val_support.append(1)
+                    self.state_val_resistance.append(0)
+            else:
+                self.val_support.append(vlo)
+                self.state_val_support.append(1)
+                self.state_val_resistance.append(0)
+
+            self.fr_sigbuy = True
+            self.fr_sigsel = False
+        else:
+            self.state_val_support.append(0)
+            self.state_val_resistance.append(0)
+
+        distance_bb_1m_top = (boltop - curr_price) * 10**count_lencur
+        distance_bb_1m_bottom = (curr_price - boltom) * 10**count_lencur
+
+        # crossed signal ema8_20 and validation
+        ema8 = dof['ema8'][-1]
+        ema20 = dof['ema20'][-1]
+        ema50 = dof['ema50'][-1]
+        ema8_past = dof['ema8'].shift(1)[-1]
+        ema20_past = dof['ema20'].shift(1)[-1]
+        ema50_past = dof['ema50'].shift(1)[-1]
+        bulls_power = dof['bulls_power'][-1]
+        bears_power = dof['bears_power'][-1]
+
+        ema820_cross_up = ema8 > ema8_past and ema8_past < ema20_past and ema8 > ema20
+        validate_cossed_up_ema820_signal = ema820_cross_up and (curr_price > cl1 or curr_price >= hc1)
+        ema820_cross_down = ema8_past > ema8 and ema8_past > ema20_past and ema8 < ema20
+        validate_cossed_down_ema820_signal = ema820_cross_down and (curr_price < cl1 or curr_price <= lc1)
+
+        ema8_cross_up_bb = ema8 < past_bolmid and ema8 > bolmid
+        validate_cossed_up_bb_ema8_signal = ema8_cross_up_bb and (curr_price > cl1 or curr_price >= hc1)
+        ema8_cross_down_bb = ema8 > past_bolmid and ema8 < bolmid
+        validate_cossed_down_bb_ema8_signal = ema8_cross_down_bb and (curr_price < cl1 or curr_price <= lc1)
+        crossed_macd_up = self.last_macd_signal > self.last_macd_value and macd_value > macd_signal
+        crossed_macd_down = self.last_macd_signal < self.last_macd_value and macd_value < macd_signal
+        validate_macd_crossed_up = crossed_macd_up and (curr_price > cl1 or curr_price >= hc1)
+        validate_macd_crossed_down = crossed_macd_down and (curr_price < cl1 or curr_price <= lc1)
+        validate_reversal_up = curr_price > cl1 or curr_price >= hc1
+        validate_reversal_down = curr_price < cl1 or curr_price <= lc1
+        param_up = (curr_low > lc1 and curr_low > lc2) or (curr_price > cl1 and curr_price > cl2)
+        param_down = (curr_low < lc1 and curr_low < lc2) or (curr_price < hc1 and curr_price < hc2)
+
+        ema8crossmidbb_up = ema8_past < past_bolmid and ema8 > bolmid
+        ema8crossmidbb_down = ema8_past > past_bolmid and ema8 < bolmid
+
+        ema8cross50_up = ema8_past < ema50_past and ema8 > ema50
+        ema8cross50_down = ema8_past > ema50_past and ema8 < ema50
+
+        status_open = self.countOpenPosition()
+
+        set_ctr_exec = 20
+
+        if ctr % 10 == 0:
+            # cross signal ema8_20
+            # cross up            
+            if ema820_cross_up == True and validate_cossed_up_ema820_signal == True and status_open == False and param_up == True:
+                print("EMA8_20 crossed, wait for confirmation...")
+                self.setEMA8UP(True)
+
+            # cross down
+            if ema820_cross_down == True and validate_cossed_down_ema820_signal == True and status_open == False and param_down == True:
+                print("EMA8_20 crossed down, wait for confirmation...")
+                self.setEMA8Down(True)
+
+            if crossed_macd_up == True and validate_macd_crossed_up == True and status_open == False and param_up == True:
+                print("MACD crossed-up, wait for confirmation...")
+                self.setMACDUp(True)
+
+            if crossed_macd_down == True and validate_macd_crossed_down == True and status_open == False and param_down == True:
+                print("MACD crossed-down, wait for confirmation...")
+                self.setMACDdown(True)
+
+            if ema8crossmidbb_up == True and status_open == False and param_up == True:
+                print("EMA8 crossed-up mid-BB, wait for confirmation...")
+                self.setEMA8BBUp(True)
+
+            if ema8crossmidbb_down == True and status_open == False and param_down == True:
+                print("EMA8 crossed-down mid-BB, wait for confirmation...")
+                self.setEMA8BBDown(True)
+
+
+            if ema8cross50_up == True and status_open == False and param_up == True:
+                print("EMA8 cross EMA50, wait for confirmation...")
+                self.setEMA8BBUp(True)
+
+            if ema8cross50_down == True and status_open == False and param_down == True:
+                print("EMA8 cross EMA50, wait for confirmation...")
+                self.setEMA8BBDown(True)
+
+            if self.getMACDUp() == True and validate_macd_crossed_up == True and status_open == False and ctr > set_ctr_exec and param_up == True: 
+                msg = "⬆️ [[{}]] [[WS]] [[MACD-1m-UP]] potentially BUY [[33011]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))
+                print("msg -> ",msg)
+                print("msg_buy -> ", self.msg_buy)
+                if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
+                    self.orderBuySell(4,"call",self.bid_price, 2)
+                    self.telegram_bot_sendtext(msg)                    
+                    self.msg_buy = msg  
+                    self.lasttime = str(timesx)
+                    self.setMACDUp(False)
+
+            if self.getMACDdown() == True and validate_macd_crossed_down == True and status_open == False and ctr > set_ctr_exec and param_down == True:                
+                msg = "⬇️ [[{}]] [[WS]] [[MACD-1m-DOWN]] potentially SELL [[32012]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))
+                print("msg -> ",msg)
+                print("msg_buy -> ", self.msg_buy)
+                if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
+                    self.orderBuySell(4,"put",self.bid_price, 2)
+                    self.telegram_bot_sendtext(msg)                    
+                    self.msg_buy = msg  
+                    self.lasttime = str(timesx)
+                    self.setMACDdown(False)
+
+            if self.getEMA8Up() == True and validate_cossed_up_ema820_signal == True and status_open == False and ctr > set_ctr_exec and param_up == True: 
+                msg = "⬆️ [[{}]] [[WS]] [[EMA8-1m]] potentially BUY [[30011]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))
+                print("msg -> ",msg)
+                print("msg_buy -> ", self.msg_buy)
+                if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
+                    self.orderBuySell(4,"call",self.bid_price, 2)
+                    self.telegram_bot_sendtext(msg)                    
+                    self.msg_buy = msg  
+                    self.lasttime = str(timesx)
+                    self.setEMA8UP(False)
+
+            if self.getEMA8Down() == True and validate_cossed_down_ema820_signal == True and status_open == False and ctr > set_ctr_exec and param_down == True:                
+                msg = "⬇️ [[{}]] [[WS]] [[EMA8-1m]] potentially SELL [[30012]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))
+                print("msg -> ",msg)
+                print("msg_buy -> ", self.msg_buy)
+                if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
+                    self.orderBuySell(4,"put",self.bid_price, 2)
+                    self.telegram_bot_sendtext(msg)                    
+                    self.msg_buy = msg  
+                    self.lasttime = str(timesx)
+                    self.setEMA8Down(False)
+
+            if self.getEMA8BBUp() == True and status_open == False and ctr > set_ctr_exec and param_up == True: 
+                msg = "⬆️ [[{}]] [[WS]] [[EMA8-MIDBB-UP]] potentially BUY [[20011]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))
+                print("msg -> ",msg)
+                print("msg_buy -> ", self.msg_buy)
+                if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
+                    self.orderBuySell(4,"call",self.bid_price, 2)
+                    self.telegram_bot_sendtext(msg)                    
+                    self.msg_buy = msg  
+                    self.lasttime = str(timesx)
+                    self.setEMA8BBUp(False)
+
+            if self.getEMA8BBDown() == True and status_open == False and ctr > set_ctr_exec and param_down == True:                
+                msg = "⬇️ [[{}]] [[WS]] [[EMA8-MIDBB-DOWN]] potentially SELL [[20012]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))
+                print("msg -> ",msg)
+                print("msg_buy -> ", self.msg_buy)
+                if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
+                    self.orderBuySell(4,"put",self.bid_price, 2)
+                    self.telegram_bot_sendtext(msg)                    
+                    self.msg_buy = msg  
+                    self.lasttime = str(timesx)
+                    self.setEMA8BBDown(False)
+
+            if self.getEMA8cross50Up() == True and status_open == False and ctr > set_ctr_exec and param_up == True: 
+                msg = "⬆️ [[{}]] [[WS]] [[EMA8-50-UP]] potentially BUY [[40011]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))
+                print("msg -> ",msg)
+                print("msg_buy -> ", self.msg_buy)
+                if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
+                    self.orderBuySell(4,"call",self.bid_price, 2)
+                    self.telegram_bot_sendtext(msg)                    
+                    self.msg_buy = msg  
+                    self.lasttime = str(timesx)
+                    self.setEMA8cross50Up(False)
+
+            if self.getEMA8cross50Down() == True and status_open == False and ctr > set_ctr_exec and param_down == True:                
+                msg = "⬇️ [[{}]] [[WS]] [[EMA8-50-DOWN]] potentially SELL [[40012]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))
+                print("msg -> ",msg)
+                print("msg_buy -> ", self.msg_buy)
+                if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
+                    self.orderBuySell(4,"put",self.bid_price, 2)
+                    self.telegram_bot_sendtext(msg)                    
+                    self.msg_buy = msg  
+                    self.lasttime = str(timesx)
+                    self.setEMA8cross50Down(False)
+
+        print("#------ condition check ------#")
+        print("counter -> ", ctr)
+        print("status_open position -> ", status_open)
+        print("minute -> ", self.ctr_minute)
+        print("ema8 cross signal ema20 (UP) -> ", ema820_cross_up)        
+        print("ema8 cross signal ema20 (DOWN) -> ", ema820_cross_down)
+        print("bulls_power -> ", bulls_power)
+        print("bears_power -> ", bears_power)
+        print("ema8 -> ", ema8)
+        print("ema20 -> ", ema20)
+        print("ema50 -> ", ema50)
+        print("macd_value -> ", macd_value)     
+        print("macd_signal -> ", macd_signal)     
+        print("macd_value > macd_signal -> ", macd_value > macd_signal)     
+        print("cross macd (UP) -> ", self.last_macd_signal > self.last_macd_value and macd_value > macd_signal)     
+        print("cross macd (DOWN) -> ", self.last_macd_signal < self.last_macd_value and macd_value < macd_signal)     
+        print("cci -> ", self.cci)
+        print("boltop -> ", boltop)
+        print("bolmid -> ", bolmid)
+        print("boltom -> ", boltom)
+        print("curr_price > curr_open : ", curr_price > curr_open)        
+        print("curr_price < curr_open : ", curr_price < curr_open)        
+        print("curr_price > cl1 : ", curr_price > cl1)
+        print("curr_price < cl1 : ", curr_price < cl1)
+        print("distance top bb 1m -> ", (boltop - curr_price) * 10**count_lencur)
+        print("distance bottom bb 1m -> ", (curr_price - boltom) * 10**count_lencur)        
+        print("distance_bb_1m_top > 20 -> ", distance_bb_1m_top > 20)
+        print("distance_bb_1m_bottom > 20 -> ", distance_bb_1m_bottom > 20)
+        print("cl1 > op1 : ", cl1 > op1)
+        print("cl1 < op1 : ", cl1 < op1)
+        print("self.cci > 100 or self.last_cci_c1 > 100 : ", self.cci > 100 or self.last_cci_c1 > 100)
+
+        # fractals as support and resistance
+        if len(self.val_support) >= 1 and len(self.val_resistance) >= 1:            
+
+            '''
+            print("val_support -> ", self.val_support)
+            print("val_resistance -> ", self.val_resistance)
+            print("cl1 > self.val_support[-1] -> ", cl1 > self.val_support[-1])
+            print("cl1 < self.val_support[-1] -> ", cl1 < self.val_support[-1])
+            print("cl1 > self.val_resistance[-1] -> ", cl1 > self.val_resistance[-1])
+            print("cl1 < self.val_resistance[-1] -> ", cl1 < self.val_resistance[-1])
+                       
+            cond1 = curr_price < self.val_support[-1]
+            cond2 = curr_price < self.val_resistance[-1]
+            
+            print("last_cond_below_support -> ", self.last_cond_below_support)
+            print("last_cond_below_resistance -> ", self.last_cond_below_resistance)
+
+            print("curr_price < val_support[-1] -> ", curr_price < self.val_support[-1])
+            print("curr_price > val_support[-1] -> ", curr_price > self.val_support[-1])
+            print("curr_price > val_resistance[-1] -> ", curr_price > self.val_resistance[-1])
+            print("curr_price < val_resistance[-1] -> ", curr_price < self.val_resistance[-1])            
+
+            print("len(val_support) -> ", len(self.val_support))
+            print("len(val_resistance) -> ", len(self.val_resistance))
+            '''
+                        
+            if ctr % 10 == 0:
+
+                print("---- state support & resistance in list ----")        
+                # print("self.state_val_support -> ", self.state_val_support)        
+                # print("self.state_val_resistance -> ", self.state_val_resistance)  
+
+                #'''     
+                if len(self.state_val_support) > 0:
+                    curr_state_support = self.state_val_support.pop(-1)
+                    past_state_support = self.state_val_support[-1]
+                    print("curr_state_support -> ", curr_state_support)
+                    print("past_state_support -> ", past_state_support)
+
+                    rev_up = past_state_support < curr_state_support and curr_price > curr_open and curr_price < hc1
+
+                    # reversal kenaikan
+                    if rev_up == True and status_open == False:
+                        print("Price reversal to long :D but need confirmation...")
+                        self.setReversalUp(True)
+
+                if len(self.state_val_resistance) > 0:
+                    curr_state_resistance = self.state_val_resistance.pop(-1)
+                    past_state_resistance = self.state_val_resistance[-1]
+                    print("curr_state_resistance -> ", curr_state_resistance)
+                    print("past_state_resistance -> ", past_state_resistance)
+
+                    rev_down = past_state_resistance < curr_state_resistance and curr_price < curr_open and curr_price < lc1
+
+                    if rev_down == True and status_open == False:
+                        print("Price reversal to short :D but need confirmation...")
+                        self.setReversalDown(True)
+
+                if (self.cci < -100 or self.last_cci_c1 < -100) and curr_price > self.val_support[-1] and curr_price > curr_open and curr_price > hc1 and distance_bb_1m_top > 20 and status_open == False:                    
+                    print("Price CCI break closest resistance, wait for confirmation...")
+                    self.setCCIUp(True)
+                
+                if (self.cci > 100 or self.last_cci_c1 > 100) and curr_price < self.val_resistance[-1] and curr_price < curr_open and curr_price < lc1 and distance_bb_1m_bottom > 20 and status_open == False:                    
+                    print("Price break down, trying to short in top :D ")
+                    self.setCCIDown(True)                    
+
+                if len(self.val_support) > 0:
+                    if cl1 > self.val_support[-1] and flo == True and curr_price > self.val_support[-1] and curr_price > curr_open and curr_price > hc1 and curr_price < boltop and distance_bb_1m_top > 20 and status_open == False:
+                        self.setFractalsUp(True)
+
+                if len(self.val_resistance) > 0:
+                    if cl1 < self.val_resistance[-1] and fhi == True and curr_price < self.val_resistance[-1] and curr_price < lc1 and curr_price < curr_open and curr_price > boltom and distance_bb_1m_bottom > 20 and status_open == False:
+                        self.setFractalsDown(True)
+
+
+                # breakout support and resistance need confirmation to avoid false breakout
+                # break resistance
+                if len(self.val_resistance) > 0:
+                    if cl1 > self.val_resistance[-1] and curr_price > hc1 and curr_price > curr_open and curr_price < boltop and distance_bb_1m_top > 20 and status_open == False:
+                        print("Price break closest resistance almost reach breakout, wait for confirmation...")
+                        self.setIsBreakout(True)
+
+
+                # break support
+                if len(self.val_support) > 0:
+                    if cl1 < self.val_support[-1] and curr_price < lc1 and curr_price < curr_open and curr_price > boltom and distance_bb_1m_bottom > 20 and status_open == False:
+                        print("Price breakdown closest resistance, wait for confirmation... ")
+                        self.setIsBreakdown(True)
+
+
+                if self.getReversalUp() == True and validate_reversal_up == True and status_open == False and ctr > set_ctr_exec and param_up == True:
+                    msg = "⬆️ [[{}]] [[WS]] [[REVERSAL-UP]] potentially BUY [[20011]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))
+                    print("msg -> ",msg)
+                    print("msg_buy -> ", self.msg_buy)
+                    if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
+                        self.orderBuySell(4,"call",self.bid_price, 1)
+                        self.telegram_bot_sendtext(msg)                    
+                        self.msg_buy = msg  
+                        self.lasttime = str(timesx)
+                        self.state_val_support = []                        
+                        self.setReversalUp(False)
+
+                if self.getReversalDown() == True and validate_reversal_down == True and status_open == False and ctr > set_ctr_exec and param_down == True:
+                    msg = "⬇️ [[{}]] [[WS]] [[REVERSAL-DOWN]] potentially SELL [[20011]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))
+                    print("msg -> ",msg)
+                    print("msg_buy -> ", self.msg_buy)
+                    if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
+                        self.orderBuySell(4,"put",self.bid_price, 1)
+                        self.telegram_bot_sendtext(msg)                    
+                        self.msg_buy = msg  
+                        self.lasttime = str(timesx)
+                        self.state_val_resistance = []
+                        self.setReversalDown(False)
+
+
+                if self.getCCIUp() == True:                    
+                    if(self.cci < -100 or self.last_cci_c1 < -100) and curr_price > self.val_support[-1] and curr_price > curr_open and curr_price > hc1 and ctr > set_ctr_exec and param_up == True:
+                        print("CCI-Up confirmed, trying to long...")
+                        msg = "⬆️ [[{}]] [[WS]] [[CCI-FAST]] potentially BUY [[51011]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))
+                        print("msg -> ",msg)
+                        print("msg_buy -> ", self.msg_buy)
+                        if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
+                            self.orderBuySell(4,"call",self.bid_price, 2)
+                            self.telegram_bot_sendtext(msg)                    
+                            self.msg_buy = msg  
+                            self.lasttime = str(timesx)
+                            self.setCCIUp(False)
+
+                if self.getCCIDown() == True:
+                    if(self.cci > 100 or self.last_cci_c1 > 100) and curr_price < self.val_resistance[-1] and curr_price < curr_open and curr_price < lc1 and ctr > set_ctr_exec and param_down == True:
+                        print("CCI-DOwn confirmed, trying to short...")                        
+                        msg = "⬇️ [[{}]] [[WS]] [[CCI-FAST]] potentially SELL [[23011]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))
+                        print("msg -> ",msg)
+                        print("msg_buy -> ", self.msg_buy)
+                        if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
+                            self.orderBuySell(4,"put",self.bid_price, 2)
+                            self.telegram_bot_sendtext(msg)                    
+                            self.msg_buy = msg  
+                            self.lasttime = str(timesx) 
+                            self.setCCIDown(False)   
+
+                if self.getFractalsUp() == True:
+                    if cl1 > self.val_support[-1] and flo == True and curr_price > self.val_support[-1] and curr_price > curr_open and curr_price > hc1 and curr_price < boltop and distance_bb_1m_top > 20 and status_open == False and ctr > set_ctr_exec and param_up == True:
+                        print("fractals Up confirmed, trying to long...")
+                        msg = "⬆️ [[{}]] [[WS]] [[PRICE]] potentially BUY [[51011]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))
+                        print("msg -> ",msg)
+                        print("msg_buy -> ", self.msg_buy)
+                        if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
+                            self.orderBuySell(4,"call",self.bid_price, 1)
+                            self.telegram_bot_sendtext(msg)                    
+                            self.msg_buy = msg  
+                            self.lasttime = str(timesx)  
+                            self.setFractalsUp(False)
+                
+                if self.getFractalsDown() == True:
+                    if cl1 < self.val_resistance[-1] and fhi == True and curr_price < self.val_resistance[-1] and curr_price < lc1 and curr_price < curr_open and curr_price > boltom and distance_bb_1m_bottom > 20 and status_open == False and ctr > set_ctr_exec and param_down == True:
+                        print("fractals Down confirmed, trying to short...")
+                        msg = "⬇️ [[{}]] [[WS]] [[PRICE]] potentially SELL [[23011]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))
+                        print("msg -> ",msg)
+                        print("msg_buy -> ", self.msg_buy)
+                        if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
+                            self.orderBuySell(4,"put",self.bid_price, 1)
+                            self.telegram_bot_sendtext(msg)                    
+                            self.msg_buy = msg  
+                            self.lasttime = str(timesx)   
+                            self.setFractalsDown(False)
+
+                if self.getBreakout() == True:
+                    if cl1 > self.val_resistance[-1] and curr_price > hc1 and curr_price > curr_open and curr_price < boltop and ctr > set_ctr_exec and param_up == True:
+                        print("confirmed breakout, trying to long...")
+                        msg = "⬆️ [[{}]] [[WS]] [[FRACTALS-BREAKOUT-UP]] potentially BUY [[51011]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))
+                        print("msg -> ",msg)
+                        print("msg_buy -> ", self.msg_buy)
+                        if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
+                            self.orderBuySell(4,"call",self.bid_price, 1)
+                            self.telegram_bot_sendtext(msg)                    
+                            self.msg_buy = msg  
+                            self.lasttime = str(timesx)  
+                            self.setIsBreakout(False)                  
+
+                if self.getBreakdown() == True:
+                    if cl1 < self.val_support[-1] and curr_price < lc1 and curr_price < curr_open and curr_price > boltom and ctr > set_ctr_exec and param_down == True:
+                        print("confirmed breakdown, trying to short...")   
+                        msg = "⬇️ [[{}]] [[WS]] [[FRACTALS-BREAKDOWN]] potentially SELL [[53011]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))
+                        print("msg -> ",msg)
+                        print("msg_buy -> ", self.msg_buy)
+                        if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
+                            self.orderBuySell(4,"put",self.bid_price, 1)
+                            self.telegram_bot_sendtext(msg)                    
+                            self.msg_buy = msg  
+                            self.lasttime = str(timesx) 
+                            self.setIsBreakdown(False)                                        
+
+
+
+        is_minute_update = False
+
+        # update data online per one-hour
+        if self.ctr_minute == 60:
+            self.ctr_minute = 1
+            # self.tempbin = self.getOnlineData() 
+            self.val_support = []
+            self.val_resistance = []
+
+        elif ctr == 0 and is_minute_update == False:
+            self.ctr_minute += 1
+            is_minute_update = True
+
+    async def toDataframe(self, msg):            
+        if msg['data'][0]['assets']:
             timex = int(msg["data"][0]["assets"][0]["created_at"].split(":")[-1].split(".")[0])
             data = msg["data"][0]["assets"][0]
             strdate = data['created_at']
             ctgl = dateutil.parser.parse(strdate)
             utc_time = calendar.timegm(ctgl.utctimetuple())
             udate = datetime.utcfromtimestamp(utc_time).strftime('%Y-%m-%d %H:%M:%S')
-            data["Datetime"] = udate
+            data["Datetime"] = udate        
             data["spread"] = (data["ask"] - data["bid"]) * (10**8)
-            djs = pd.DataFrame(data, columns=['Datetime','precision','repeat','rate','ask','bid','created_at','ric','spread'], index=[0]).rename_axis(columns='Datetime')        
-            if df.empty:
-                df = pd.concat([djs], ignore_index=True)
+            djs = pd.DataFrame(data, columns=['Datetime','precision','repeat','rate','ask','bid','created_at', 'spread'], index=[0]).rename_axis(columns='Datetime')        
+            if self.df.empty:
+                self.df = pd.concat([djs], ignore_index=True)
             else:
-                df = pd.concat([df,djs], ignore_index=True)
-    except:
-        ws = websocket.WebSocketApp("wss://as.binomo.com/",
-                                  on_message = on_message,
-                                  on_error = on_error,
-                                  on_close = on_close,
-                                  on_ping=on_ping,
-                                  on_pong=on_pong
-                                  )
-        ws.on_open = on_open
+                self.df = pd.concat([self.df,djs], ignore_index=True)
 
-    process_om(df)
+            await self.createDataframe(self.df)
 
-def on_error(ws, error):
-    print(error)
+    async def connect(self):        
+        payload = '{"action":"subscribe","rics":["'+self.assetRic+'"]}'        
+        async with self as websocket:        
+            await websocket.send(payload)
+            while True:                        
+                print("> {}".format(payload))
+                try:
+                    recvv = await asyncio.wait_for(websocket.recv(), timeout=60)
+                    # print("> {}".format(recvv))
+                    rett = json.loads(recvv)                
+                    if rett['data'][0]['action'] == 'assets':
+                        await self.toDataframe(rett)
+                    else:
+                        print("{}".format(rett)) 
+                except asyncio.exceptions.CancelledError as e:
+                    print(e)
+                    websocket = await websockets.connect(self.pollHost,ssl=ssl.SSLContext(protocol=ssl.PROTOCOL_TLS))
+                    await websocket.send('{"action":"subscribe","rics":["'+self.assetRic+'"]}')        
+                    continue
+                except websockets.exceptions.ConnectionClosedError as e:
+                    websocket = await websockets.connect(self.pollHost,ssl=ssl.SSLContext(protocol=ssl.PROTOCOL_TLS))
+                    await websocket.send('{"action":"subscribe","rics":["'+self.assetRic+'"]}')        
+                    continue
+                except asyncio.CancelledError as e:
+                    websocket = await websockets.connect(self.pollHost,ssl=ssl.SSLContext(protocol=ssl.PROTOCOL_TLS))
+                    await websocket.send('{"action":"subscribe","rics":["'+self.assetRic+'"]}')        
+                    continue
+                    #pass 
 
-def on_close(ws):
-    print("### closed ###")
+    def telegram_bot_sendtext(self,bot_message):    
+        send_text = 'https://api.telegram.org/bot' + self.botToken + '/sendMessage?chat_id=' + self.gchatId + '&parse_mode=Markdown&text=' + bot_message
+        response = requests.get(send_text)
+        return response.json()    
 
-def on_open(ws):
-    def run(*args):
-        ws.send("subscribe:Z-CRY/IDX")
-    thread.start_new_thread(run, ())
+    def get_asset(self):
+        with open("asset.json","r") as f:assetList=json.loads(f.read())
+        with open("setting.json","r") as f:settings=json.loads(f.read())
+        currency = settings["currency"]
+        for i in assetList:
+            if i["name"] == currency:assetId=i["id"]; assetRic=i["ric"]
 
-def on_ping(ws, message):
-    print(f'{str(datetime.now())}   ### Got a Ping! ###')
+        authToken = settings["authToken"]
+        walletType = settings["walletType"]
+        deviceId = settings["deviceId"]
+        tournament_id = settings["tournament_id"]
 
-def on_pong(ws, message):
-    global counter_ping
-    print(f'{str(datetime.now())}   ### Send a Pong! ###')
-    #ws.send("ping")    
-    counter_ping = counter_ping + 1
-    if counter_ping % 100 == 0:
-        ws.send('{"topic":"asset:Z-CRY/IDX","event":"ping","payload":{},"ref":"' +str(counter_ping) + '","join_ref":"28"}')
+        return {"assetId": assetId, "assetRic": assetRic, "currency":currency, "authToken": authToken, "deviceId": deviceId, "tournament_id": tournament_id, "walletType": walletType}
 
-
-def process_om(data):    
-    global loop_socket
-
-    loop_socket+=1
-
-    dtt = datetime.now(tzinfo)
-    wibtime = dtt.strftime('%H:%M')
-    charttime = dtt.strftime('%Y-%m-%d %H:%M')
-
-    data.index = pd.to_datetime(data.Datetime)
-    grouped = data.groupby('ric')    
-    curprice =  grouped['rate'].resample('1Min').ohlc()
-    res5m =  grouped['rate'].resample('5Min').ohlc()
-    volume =  grouped['rate'].resample('1Min').count()
-    spread = grouped['spread'].resample('1Min').sum()
-
-    df2 = pd.concat([curprice, volume, spread], axis=1, keys=['Rate', 'Volume', 'Spread'])
-    #dg = grouped.get_group('ric')('Rate')    
-    dvolume = pd.DataFrame(curprice,columns=['high','low','open','close'])
-    
-    #data 5 menit
-    delima = pd.DataFrame(res5m,columns=['high','low','open','close'])
-    delima['ema14'] = ta.ema(delima['close'],14)
-    delima['ema28'] = ta.ema(delima['close'],28)
-
-    dvolume['ema14'] = ta.ema(dvolume['close'],14) #dvolume.iloc[:,0].ewm(span=1,adjust=False).mean()
-    dvolume['ema28'] = ta.ema(dvolume['close'],28)
-
-    dvolume["counter"] = volume
-    dvolume["Spread"] = spread
-    va = (curprice["close"]-curprice["open"]) * (10**10)
-    dvolume["va"] = np.round(va, 0)
-    dvolume["volume"] = np.round(va)
-
-    
-    ava = np.array(va.values.tolist())
-
-    waktu = data.index[-1].strftime('%H:%M')
-    waktu2 = ""
-
-    detik = data.index[-1].strftime('%S')
-    ctr = dvolume["counter"][-1]
-
-    ctrl = int(data["created_at"][-1].split(":")[-1].split(".")[0])
-
-    print("detik -> ", detik)
-    print("xctr -> ", ctrl)
-    
-
-    print(dvolume.tail(10))
-    engulfing(dvolume,delima)
-
-def engulfing(data,datalima):
-    global pcounter, ccounter, dev_counter, timeleft, last_signal, waktu_lalu, timex
-    global msg_buy_adx, msg_sell_adx, last_signal_code, msg, maxlow, maxhigh    
-    global pesan_buy_lama, pesan_sell_lama, win_status, last_amount, latest_balance
-    global pesan_buy_lama, pesan_sell_lama, aa
-    
-    datasli = data
-
-    if data.size > 4:
-
-        '''
-        start volume analysis
-        '''
-
-        aa = 0
-        # volume
-        if int(round(datasli['va'][-1])) > 5000:
-            print("AV BUY detected send message ..." + waktu)
-            aa+=1
-            dtb = datetime.now(tzinfo)
-            buyt = dtb.strftime('%H:%M')
-            pesan_buy = "⬆️ [[CRY-IDX]] [[RT]] [[VA]] big BUY detected at " + str(buyt)
-            print("aa -> ",aa)
-            if pesan_buy_lama != pesan_buy:
-                if (aa > 15) and (ctr < 75):  
-                    if c2 > ema5_1:                                   
-                        orderBuySell(1,"call",20001)
-                        print(pesan_buy)
-                        aa = 0
-                        telegram_bot_sendtext(pesan_buy)
-                        pesan_buy_lama = pesan_buy
-            
-
-        elif int(round(datasli['va'][-1])) < -5000:
-            print("AV SELL detected send message ...")
-            aa+=1
-            dts = datetime.now(tzinfo)
-            sellt = dts.strftime('%H:%M')
-            pesan_sell = "⬇️ [[CRY-IDX]] [[RT]] [[VA]] big SELL detected at " + str(sellt)
-            print("aa -> ",aa)
-            if pesan_sell_lama != pesan_sell:
-                if (aa > 15) and (ctr < 75):             
-                    if c2 < ema5_1:                                   
-                        orderBuySell(1,"put",20002)
-                        print(pesan_sell)
-                        aa = 0
-                        #telegram_bot_sendtext(pesan_sell)
-                        pesan_sell_lama = pesan_sell
-
-        '''
-        end Volume analysis
-        '''
-
-        # waktu
-        i = 0
-        dtb = datetime.now(tzinfo)
-        present_utc = datetime.now()
-        presentDate = dtb + timedelta(minutes=1)
-        waktu = presentDate.strftime('%H:%M')
+    def getOnlineData(self):
+        binomodata = Ticker()
+        #binomodata = DataHistory()
+        data = binomodata.getData()
+        if len(data["d1"]) > 0:
+            return data
         
-        lmnt = presentDate.strftime('%M')
-        last_minute = getLastMinute(int(lmnt))
-        if last_minute == 5:
-            last_minute == 1
-        limit_tp = 5
-        max_tp5 = limit_tp - last_minute
 
-        last_signal_time = dtb - timedelta(minutes=1)
-        last_stime = last_signal_time.strftime('%H:%M')
+    def orderBuySell(self, typeorder, call_put, amnt=15000, duration=1):
+        try:
+            self.pb.bid(typeorder, call_put, amnt, duration)
+        except Exception as e:
+            print(e)
+        finally:
+            pass
 
-        utc_present = present_utc + timedelta(minutes=1)
-        waktu_utc = utc_present.strftime('%H:%M')
-        # end waktu
+        balance = self.pb.getCurrentBalance()
+        print("orderBuySell balance -> ", balance)
+        self.setBalance(balance)
 
-        eng = data.tail(3)
-        eng.drop(eng.tail(1).index,inplace=True)
+    def countOpenPosition(self):
+        op = self.pb.openPosition()
+        if op.empty:            
+            return False
+        else:
+            result = op.query('close_rate == 0')             
+            return True if len(result.index) > 0 else False
 
-        #print("eng -> ",eng)
+        #return len(op.index)
+
+    def setBalance(self,lbalance):
+        self.latest_balance = lbalance
         
-        d11 = get_ema1428(60)
-        d1 = d11["d1"]
+    def getBalance(self):
+        return self.latest_balance
+
+    def setIsBreakout(self,is_breakout):
+        self.is_breakout = is_breakout
         
-        print("d1 before -> ", d1.tail(5))
+    def getBreakout(self):
+        return self.is_breakout
 
-        dlima = d1.resample("5Min").mean()
-        ind5 = Indicators(dlima)
-        ind5.fractals(column_name_high='fractals_high', column_name_low='fractals_low')
-        ind5 = ind5.df
-
-        ind5['EMA5'] = ta.ema(ind5['Close'],5)
-        ind5['EMA14_5'] = ta.ema(ind5['Close'],14)
-        ind5['EMA28_5'] = ta.ema(ind5['Close'],28)
-        ind5['EHigh'] = (ind5['High'] - ind5['EMA28_5']) * (10**7)
-        ind5['ELow'] = (ind5['Low'] - ind5['EMA28_5']) * (10**7)
-        ind5['EHigh_mean'] = ((ind5['High'] - ind5['EMA28_5']) * (10**7)).mean()
-        ind5['ELow_mean'] = ((ind5['Low'] - ind5['EMA28_5']) * (10**7)).mean()
-
-        d5 = ind5
-
-        dema = d1.tail(3)
-
-        dedema = dema
-        latest_ema = d1['EMA28'][-1]
-        ema28 = latest_ema
-        ema14 = d1['EMA14'][-1]        
-        ema5_1 = d1['EMA5'][-1]
-
-        dema.drop(dema.tail(1).index,inplace=True)
-
-        ema28 = float(0 if ema28 is None else ema28)
-        ema14 = float(0 if ema14 is None else ema14)
+    def setIsBreakdown(self,is_breakdown):
+        self.is_breakdown = is_breakdown
         
+    def getBreakdown(self):
+        return self.is_breakdown
+
+    def setCCIUp(self,cci_up):
+        self.cci_up = cci_up
         
-        latest_v3 = datasli['va'][-1]
+    def getCCIUp(self):
+        return self.cci_up
 
-        # close data
-        h1 = dema['High'][0] 
-        h2 = dema['High'][-1]
-        h3 = d1['High'][-1]  
-
-        c1 = dema['Close'][0]
-        c2 = dema['Close'][-1]
-        c3 = d1['Close'][-1]
-
-        l1 = dema['Low'][1]
-        l2 = dema['Low'][-1]
-        l3 = d1['Low'][-1] 
-
-        o1 = dema['Open'][0]
-        o2 = dema['Open'][-1]
-        o3 = d1['Open'][-1]
+    def setCCIDown(self,cci_down):
+        self.cci_down = cci_down
         
-        #volume
-        v1 = eng['va'][0]
-        v2 = eng['va'][-1]
-        v3 = latest_v3
+    def getCCIDown(self):
+        return self.cci_down
 
-
-        cur_balance = getBalance()
-                
-        if (cur_balance > latest_balance):
-            win_status = True
-        elif (cur_balance < latest_balance):
-            win_status = False
-
-        if last_amount > cur_balance:
-            last_amount = 0
-
-        win_rate_adjustment = 2.5
-
-        counter = datasli['counter'][-1]
-        time_threshold_eng = 70
-        threshold_va = 3000
-        threshold_counter = 50
-
-        # MAXLOW - MAXHIGH 1 Menit
-        ll11 = d1['Low'][-1]
-        hh11 = d1['High'][-1]
-
-        if ll11 not in maxlow:            
-            maxlow.append(ll11)
-        if hh11 not in maxhigh:            
-            maxhigh.append(hh11)
-
-
-        # reset maxlow & maxhigh
-        if int(datetime.utcnow().strftime("%S")) == 1:
-            maxlow = []
-            maxhigh = []
+    def setEMA8UP(self,is_ema8_up):
+        self.is_ema8_up = is_ema8_up
         
-        print("maxlow -> ", maxlow)
-        print("maxhigh -> ", maxhigh)
+    def getEMA8Up(self):
+        return self.is_ema8_up
 
-        print("MIN: maxlow -> ", min(maxlow))
-        print("MAX: maxhigh -> ", max(maxhigh))
-
-        last_minute = int(1 if last_minute == 0 else last_minute)
-        last_minute = int(2 if last_minute == 1 else last_minute)
-        last_minute = int(1 if last_minute == 5 else last_minute)
-
-
-        # END MAXLOW MAXHIGH
-
-        d1_hh = d1['EHigh'][-1]
-        d1_ll = d1['ELow'][-1]
-
-        #EMA timeframe 5 menit
-        delima = d5.tail(3)
-        print("delima before -> ", delima)
-        dlima = delima
-        lema28 = d5['EMA28_5'][-1]
-        lema14 = d5['EMA14_5'][-1]
-
-        latest_h53 = d5['High'][-1]
-        latest_c53 = d5['Close'][-1]
-        latest_l53 = d5['Low'][-1]
-        latest_o53 = d5['Open'][-1]
-
-        delima.drop(delima.tail(1).index,inplace=True)
-
-        print("delima after -> ",delima)
-
-        # --------------------------------------
-
-        h51 = delima['High'][0] 
-        h52 = delima['High'][-1]
-        h53 = latest_h53
-
-        l51 = delima['Low'][0]
-        l52 = delima['Low'][-1]
-        l53 = latest_l53 
-
-        o51 = delima['Open'][0]
-        o52 = delima['Open'][-1]
-        o53 = latest_o53
-
-        c51 = delima['Close'][0] 
-        c52 = delima['Close'][-1]
-        c53 = latest_c53
-
-        d5_hh = d5['EHigh'][-1]
-        d5_ll = d5['ELow'][-1]
-
-        ema28_5 = float(0 if d5['EMA28_5'][-1] is None else d5['EMA28_5'][-1])
-        ema14_5 = float(0 if d5['EMA14_5'][-1] is None else d5['EMA14_5'][-1])
-        ema5 = float(0 if d5['EMA5'][-1] is None else d5['EMA5'][-1])
-
-        d5_fractals_high = bool(0 if d5['fractals_high_y'][-1] is None else d5['fractals_high_y'][-1])
-        d5_fractals_low = bool(0 if d5['fractals_low_y'][-1] is None else d5['fractals_low_y'][-1])
-
-        print("latest c53 -> ", latest_c53)
-        print("latest h53 -> ", latest_h53)
-        print("latest l53 -> ", latest_l53)
-        print("latest o53 -> ", latest_o53)
+    def setEMA8Down(self,is_ema8_down):
+        self.is_ema8_down = is_ema8_down
         
-        print("latest h53 > h52 ", latest_c53 > h52)
-        print("latest l53 > l52 ", latest_l53 > l52)
+    def getEMA8Down(self):
+        return self.is_ema8_down
 
-        # fractal EMA 28
-        HFractalEMA = float(0 if d1['EHigh'][-1] is None else d1['EHigh'][-1])
-        LFractalEMA = float(0 if d1['ELow'][-1] is None else d1['ELow'][-1])
-
-        #print(dema['EMA28'])
-
-        fractals_high = bool(0 if d1['fractals_high'][-1] is None else d1['fractals_high'][-1])     
-        fractals_low = bool(0 if d1['fractals_low'][-1] is None else d1['fractals_low'][-1])
-
-        fractals_high2 = bool(0 if dema['fractals_high'][1] is None else dema['fractals_high'][1])     
-        fractals_low2 = bool(0 if dema['fractals_low'][1] is None else dema['fractals_low'][1])
-
-        diff_hema = (h3 - latest_ema) * (10**7)
-        diff_lema = (l3 - latest_ema) * (10**7)
-
-        #ELow, EHigh
-        curr_diff_ema  = (c3 - ema28) * (10**7)
-        diff_ema14  = (c3 - ema14) * (10**7)
+    def setFractalsUp(self,is_fractal_up):
+        self.is_fractal_up = is_fractal_up
         
-        ema28_5 = float(0 if ema28_5 is None else ema28_5)
-        ema14_5 = float(0 if ema14_5 is None else ema14_5)
+    def getFractalsUp(self):
+        return self.is_fractal_up
+
+    def setFractalsDown(self,is_fractal_down):
+        self.is_fractal_down = is_fractal_down
         
-        print("latest_ema -> ", latest_ema)
-        print("curr_diff_ema -> ", curr_diff_ema)
-        print("HFractalEMA -> ",HFractalEMA)
-        print("LFractalEMA -> ", LFractalEMA)
-        print("diff_hema:  ", diff_hema)
-        print("diff_lema: ", diff_lema)
-        print("fractals_high: ", fractals_high)
-        print("fractals_low: ", fractals_low)
+    def getFractalsDown(self):
+        return self.is_fractal_down
 
-        print("fractals_high2: ", fractals_high2)
-        print("fractals_low2: ", fractals_low2)
-        print("is_below_ema: ", latest_ema > c3)
-        print("is_below_ema_28_5: ", ema28_5 > c3)
-        print("is_below_ema_14_5: ", ema14_5 > c3)
-        print("is ema14_5 > ema28_5 : ", ema14_5 > ema28_5)
-        print("fractal_up_threshold_5m: ", h52)
-        print("fractal_down_threshold_5m: ", l52)
-        print("d5_hh: ", d5_hh)
-        print("d5_ll: ", d5_ll)
-        print("d1_hh: ", d1_hh)
-        print("d1_ll: ", d1_ll)
-        print("d5_fractals_low: ", d5_fractals_low)
-        print("d5_fractals_high: ", d5_fractals_high)
-
+    def setMACDUp(self,is_macd_up):
+        self.is_macd_up = is_macd_up
         
-        if counter >= 100:
-            hcounter = c3
+    def getMACDUp(self):
+        return self.is_macd_up
 
-        if (counter <= threshold_counter) and (abs(v3) >= threshold_va):
-            pcounter = c3
-            ccounter = counter
-            dev_counter = ccounter + 15
-            timeleft = 140 - (counter - 5)
-
-
-        print("counter -> ", counter)
-        print("prices -> ", c3)
-        print("volume -> ", v3)
-        print("timeleft -> ", timeleft)
-        print("pcounter -> ", pcounter)
-        print("dev_counter -> ", dev_counter)
-        print("last_minute: ", last_minute)
-
-        print("l53 < l52: ", l53 < l52)
-        print("l53 > l52: ", l53 > l52)
-        print("h53 > h52: ", h53 > h52)
-        print("h53 < h52: ", h53 < h52)
-        print("ema14 < ema28: ", ema14 < ema28)
-
-        param_cek_candle_kenaikan = (c53 > c52) and (l53 > l52) and (h53 > h52) and ((h3 > h2) and (l3 > l2))
-        param_cek_candle_penurunan = (c53 <= c52) and (h53 < h52) and ((h3 < h2) and (l3 < l2))
-        param_cek_hh = (h53 < h52) and (c3 < h52) and (c53 < h52) and (c3 < h2)
-        param_cek_ll = (c53 > l52) and (c3 > l52) and (c3 > l2)
-        param_ciri_naik_overbought= (c3 > h52) and (c3 > o53)
-        param_ciri_turun_oversold = (c3 < l52) and (c3 < o53)
-
-        # 1 menit
-        param_diatas_ema14 = (c3 > ema14)
-        param_diatas_ema28 = (c3 > ema28)
-        param_dibawah_ema14 = (c3 < ema14)
-        param_dibawah_ema28 = (c3 < ema28)
-        param_diatas_ema14_28 = (c3 > ema14) and (c3 > ema28) and (ema14 > ema28)
-        param_dibawah_ema14_28 = (c3 < ema14) and (c3 < ema28)
-
-        # 5 menit
-        param_dibawah_ema28_5 = (c53 < ema28_5)
-        param_dibawah_ema14_5 = (c53 < ema14_5)
-        param_diatas_ema28_5 = (c53 > ema28_5)
-        param_diatas_ema14_5 = (c53 > ema14_5)        
-        param_diatas_ema14_28_5 = (c3 > ema14_5) and (c3 > ema28_5) and (ema14 > ema28)
-        param_dibawah_ema14_28_5 = (c3 < ema14_5) and (c3 < ema28_5)        
-
-        # dibawah ema5
-        c53_dibawah_ema5 = (c53 < ema5)
-        c53_diatas_ema5 = (c53 > ema5)
-        c52_dibawah_ema5 = (c52 < ema5)
-        c52_diatas_ema5 = (c52 > ema5)        
-        h52_diatas_ema5 = (h52 > ema5)
-        h52_dibawah_ema5 = (h52 < ema5)
-        l52_diatas_ema5 = (l52 > ema5)
-        l52_dibawah_ema5 = (l52 < ema5)
-
-        c2_dibawah_ema5_1 = (c2 < ema5_1)
-        c2_diatas_ema5_1 = (c2 > ema5_1)        
-
-        ema14_5_diatas_ema28_5 = (ema14_5 > ema28_5)
-        ema14_5_dibawah_ema28_5 = (ema14_5 < ema28_5)
-
-        param_cek_satu_candle_turun = (c3 < o3) and (c3 < c2 and c3 < l2)
-        param_cek_satu_candle_naik = (c3 > o3) and (c3 > c2 and h3 > h2)
-        print("param_cek_candle_kenaikan: ", param_cek_candle_kenaikan)
-        print("param_cek_candle_penurunan: ", param_cek_candle_penurunan)
-        print("param_cek_satu_candle_turun: ", param_cek_satu_candle_turun)
-        print("param_cek_hh: ", param_cek_hh)
-        print("param_cek_ll: ", param_cek_ll)
-        print("param_ciri_naik_overbought: ", param_ciri_naik_overbought)
-        print("param_ciri_turun_oversold: ", param_ciri_turun_oversold)
-
-        param_cek_satu_candle_naik_dibawah_ema14 = (v2 > 0 and v3 > 0) and (c3 > c2 and l3 > l2) and (c3 < ema14) and (c3 <= h2) or (c3 > o3 and c3 > c2 and c3 > h2)
-
-        param_cek_satu_candle_naik = (v2 > 0 and v3 > v2) and (c3 > c2 and l3 > l2) and (c3 <= h2) or (c3 > o3 and c3 > c2 and c3 > h2)
-
-        print("param_cek_satu_candle_naik_dibawah_ema14: ", param_cek_satu_candle_naik_dibawah_ema14)
-        print("param_cek_satu_candle_naik: ", param_cek_satu_candle_naik)
-        print("l3 < l52: ", c3 < l52)
-        print("h3 < h52: ", c3 < l52)
-
-
-        if len(msg) <= 0:
-            msg = "[[BOT STARTED]]"
-
-
-        dts = datetime.now(tzinfo)
-        ordert = dts.strftime('%H:%M')
-
-        maxv3 = datasli[['va'][-1]].max()
-        minv3 = datasli[['va'][-1]].min()
-      
-        maxc3 = d1[['High'][-1]].max()
-        minc3 = d1[['Low'][-1]].min()
+    def setMACDdown(self,is_macd_down):
+        self.is_macd_down = is_macd_down
         
-        print("maxv3 -> ", maxv3)
-        print("minv3 -> ", minv3)
-        print("maxc3 -> ", maxc3)
-        print("minc3 -> ", minc3)
-        print("cur_balance -> ", cur_balance)
-        print("win_status -> ", win_status)
-        print("last_amount -> ", last_amount)
+    def getMACDdown(self):
+        return self.is_macd_down
+
+    def setReversalUp(self,is_reversal_up):
+        self.is_reversal_up = is_reversal_up
         
-        diff_ema5_1 = float(ema5_1 - c3 if ema5_1 > c3 else c3 - ema5_1) * (10**7)
-        diff_ema28 = float(ema28 - c3 if ema28 > c3 else c3 - ema28) * (10**7)
-        print("jarak ema5 1 menit dengan c3 -> ", diff_ema5_1)
-        print("jarak ema28 1 menit dengan c3 -> ", diff_ema28)
+    def getReversalUp(self):
+        return self.is_reversal_up
 
-        mnt = last_minute + 1
+    def setReversalDown(self,is_reversal_down):
+        self.is_reversal_down = is_reversal_down
+        
+    def getReversalDown(self):
+        return self.is_reversal_down
 
-        print("c2_diatas_ema5_1 -> ", c2_diatas_ema5_1)
+    def setLastBelowSupport(self, cond):
+        self.last_cond_below_support = cond
 
-        '''
-        engulfing analysis
-        '''
+    def getLastBelowSupport(self):
+        return self.last_cond_below_support
 
-        if (h2 < ema5_1) and (c2 < ema5_1):
-            msg = "⬆️ [[CRY-IDX]] [[RT]] [[ENG]] potentially BUY [[22501]] - UTC7 " + str(waktu) + " | UTC0 " + str(waktu_utc)            
-            print(msg)            
-            def_amount = (25501 if last_amount == 0 else last_amount and 25501 if win_status == True else last_amount)                                        
-            if (o3 < ema5_1) and (h3 > h2) and (c3 > ema5_1) and (h3 > ema5_1):
-                if c52_diatas_ema5 == True:                
-                    if msg != msg_buy_adx:                
-                        orderBuySell(4,"call",25501,1)
-                        telegram_bot_sendtext(msg)                        
-                        msg_buy_adx = msg  
-                        last_amount = def_amount 
+    def getLastBelowResistance(self):
+        return self.last_cond_below_resistance
 
+    def setLastBelowResistance(self, cond):
+        self.last_cond_below_resistance = cond
 
-        if (h2 < ema5_1) and (c2 < ema5_1):
-            msg = "⬆️ [[CRY-IDX]] [[RT]] [[ENG]] potentially SELL [[25502]] - UTC7 " + str(waktu) + " | UTC0 " + str(waktu_utc)            
-            print(msg) 
-            def_amount = (25502 if last_amount == 0 else last_amount and 25502 if win_status == True else last_amount)                                                   
-            if (o3 > ema5_1) and (h3 < l2) and (c3 < ema5_1) and (h3 < ema5_1):
-                if c52_dibawah_ema5 == True:
-                    if msg != msg_buy_adx:                
-                        orderBuySell(1,"put",25502,1)
-                        telegram_bot_sendtext(msg)                        
-                        msg_buy_adx = msg  
-                        last_amount = def_amount 
+    def setEMA8BBUp(self, ema8midbb_up):
+        self.ema8midbb_up = ema8midbb_up
 
-        '''
-        end engulfing tambahan
-        '''
+    def getEMA8BBUp(self):
+        return self.ema8midbb_up
 
-        '''
-        start EMA analysis
-        '''
+    def setEMA8BBDown(self,ema8midbb_down):
+        self.ema8midbb_down = ema8midbb_down
 
-        if (c2_diatas_ema5_1 == True):
+    def getEMA8BBDown(self):
+        return self.ema8midbb_down
 
-            if (diff_ema5_1 < 1) and (c3 > ema5_1) and (o2 > ema5_1):
-                def_amount = (21500 if last_amount == 0 else last_amount and 21500 if win_status == True else last_amount)                            
-                if (h3 > h2) and (c2 > ema5_1) and (o2 > ema5_1):  
-                    msg = "⬆️ [[CRY-IDX]] [[RT]] [[EMA51]] potentially BUY [[21500]] - UTC7 " + str(waktu) + " | UTC0 " + str(waktu_utc)            
-                    print(msg)
-                    if c52_diatas_ema5 == True:                        
-                        if msg != msg_buy_adx:
-                                orderBuySell(1,"call",21500)
-                                telegram_bot_sendtext(msg)
-                                msg_buy_adx = msg  
-                                last_amount = def_amount 
+    def setEMA8cross50Up(self, is_ema8_cross50_up):
+        self.is_ema8_cross50_up = is_ema8_cross50_up
 
-            if (c3 <= min(maxlow)):
-                def_amount = (25011 if last_amount == 0 else last_amount and 25011 if win_status == True else last_amount)            
-                place_order = (25011 if win_status == True else win_rate_adjustment * 25011)
-                #and (c3 >= c2)
+    def getEMA8cross50Up(self):
+        return self.is_ema8_cross50_up
 
-                if (c2_diatas_ema5_1 == True) and (c3 > l2) or (c3 >= c2):
-                    if (c52_diatas_ema5 == True) and (c2 > ema5_1) and (c53 > c52):
-                        if (h53 < h52) and (c3 > o3) and (counter > 120):
-                            msg = "⬆️ [[CRY-IDX]] [[RT]] [[EMA51]] potentially BUY [[25011]] - UTC7 " + str(waktu) + " | UTC0 " + str(waktu_utc)            
-                            print(msg)
-                            if msg != msg_buy_adx:                            
-                                orderBuySell(4,"call",25011,last_minute)
-                                telegram_bot_sendtext(msg)                    
-                                msg_buy_adx = msg  
-                                last_amount = def_amount
+    def setEMA8cross50Down(self, is_ema8_cross50_down):
+        self.is_ema8_cross50_down = is_ema8_cross50_down
 
-                    if (c52_dibawah_ema5 == True) and (c2 < ema5_1) and (c53 < c52):
-                        msg = "⬇️ [[CRY-IDX]] [[RT]] [[EMA51]] potentially SELL [[25111]] - UTC7 " + str(waktu) + " | UTC0 " + str(waktu_utc)            
-                        print(msg)
-                        if (c3 < o3) and (counter > 120):
-                            if msg != msg_buy_adx:                            
-                                orderBuySell(4,"put",25111,last_minute)
-                                telegram_bot_sendtext(msg)                    
-                                msg_buy_adx = msg  
-                                last_amount = def_amount
-                
-                if (c3 < ema14) or (c3 < ema28) and (ema28 < ema14) and (ema14 < ema5_1):
-                    place_order = (25025 if win_status == True else win_rate_adjustment * 25025)                
-                    print("place_order CALL -> ",place_order)
-                    if c52_diatas_ema5 == True:                
-                        if (c3 > c2) or (c3 > h2) and (c3 > o3):                                                  
-                            msg = "⬆️ [[CRY-IDX]] [[RT]] [[EMA51]] [[REV]] potentially BUY [[25025]] - UTC7 " + str(waktu) + " | UTC0 " + str(waktu_utc)            
-                            print(msg)
-                            if msg != msg_buy_adx:                            
-                                orderBuySell(4,"call",25025,last_minute)
-                                telegram_bot_sendtext(msg)                    
-                                msg_buy_adx = msg  
-                                last_amount = def_amount                        
-
-            if (c3 > max(maxhigh)) and (diff_ema28 > 30) and ((c3 < o3) or (c3 < l2)):
-                    place_order = (25026 if win_status == True else win_rate_adjustment * 25026)                
-                    print("place_order PUT -> ",place_order)
-                    if (c3 > c2) or (c3 > h2) and (c3 > o3):                                                  
-                        msg = "⬆️ [[CRY-IDX]] [[RT]] [[EMA51]] [[REV30]] potentially BUY [[25026]] - UTC7 " + str(waktu) + " | UTC0 " + str(waktu_utc)            
-                        print(msg)
-                        if msg != msg_buy_adx:                            
-                            orderBuySell(1,"call",25026)
-                            telegram_bot_sendtext(msg)                    
-                            msg_buy_adx = msg  
-                            last_amount = def_amount 
-            
-
-            elif (c2_diatas_ema5_1 == True) and (counter < 75) and (c3 < c2) and (diff_ema5_1 < 0.5):
-                if c52_diatas_ema5 == True:  
-                    if (c3 > c2) or (c3 > h2) and (c3 > o3):   
-                        msg = "⬆️ [[CRY-IDX]] [[RT]] [[EMA51]] [[REV30]] potentially BUY [[25026]] - UTC7 " + str(waktu) + " | UTC0 " + str(waktu_utc)            
-                        print(msg)                    
-                        if msg != msg_buy_adx:                                                                           
-                            orderBuySell(1,"call",25027)
-                            telegram_bot_sendtext(msg)                    
-                            msg_buy_adx = msg  
-                            last_amount = def_amount
-
-        #print("c2_dibawah_ema5_1 -> ", c2_dibawah_ema5_1)
-
-        if (c2_dibawah_ema5_1 == True):
-            def_amount = (25012 if last_amount == 0 else last_amount and 25012 if win_status == True else last_amount)                        
-            # jika terrjadi penurunan
-            if (c3 >= max(maxhigh)):
-                if (c2_dibawah_ema5_1 == True) and (c3 < l2) or (h3 > h2):                
-                    msg = "⬇️ [[CRY-IDX]] [[RT]] [[EMA51]] potentially SELL [[25012]] - UTC7 " + str(waktu) + " | UTC0 " + str(waktu_utc)            
-                    print(msg)
-                    place_order = (25012 if win_status == True else win_rate_adjustment * 25012)                
-                    print("place_order PUT -> ",place_order)
-                    if (c52_dibawah_ema5 == True) and ((c3 > ema28_5) or (c3 > ema14_5)):                    
-                        if (c3 < c2) or (c3 < l2) and (c3 < o3):
-                            if msg != msg_buy_adx:                                                                                                       
-                                orderBuySell(4,"put",25012, last_minute)
-                                telegram_bot_sendtext(msg)                    
-                                msg_buy_adx = msg  
-                                last_amount = def_amount 
-
-                if (c3 > ema14) or (c3 > ema28) and (ema28 > ema14) and (ema14 > ema5_1) and (o2 > ema14):                                        
-                    if c52_dibawah_ema5 == True:
-                        msg = "⬇️ [[CRY-IDX]] [[RT]] [[EMA51]] [[REV]] potentially SELL [[25022]] - UTC7 " + str(waktu) + " | UTC0 " + str(waktu_utc)            
-                        print(msg)                        
-                        place_order = (25022 if win_status == True else win_rate_adjustment * 25022)                
-                        if (c2 < ema5_1) and ((c3 > ema28_5) or (c3 > ema14_5)) and (c2 < ema5):
-                            if (c3 < c2) or (c3 < l2) and (c3 < o3):
-                                if msg != msg_buy_adx:                                                                                                                                       
-                                    orderBuySell(4,"put",25022, last_minute)
-                                    telegram_bot_sendtext(msg)                    
-                                    msg_buy_adx = msg  
-                                    last_amount = def_amount                        
-                    elif c52_diatas_ema5 == True:
-                        if c2 > ema5_1:
-                            msg = "⬆️ [[CRY-IDX]] [[RT]] [[EMA51]] [[REV]] potentially BUY [[22222]] - UTC7 " + str(waktu) + " | UTC0 " + str(waktu_utc)            
-                            print(msg)
-                            if (c3 > c2) or (c3 > h2) and (c3 > o3):
-                                if msg != msg_buy_adx:                                                                                                                                                                                                                             
-                                    orderBuySell(4,"call",22222, last_minute)
-                                    telegram_bot_sendtext(msg)                    
-                                    msg_buy_adx = msg  
-                                    last_amount = def_amount                        
-                        elif c2 < ema5_1:
-                            msg = "⬇️ [[CRY-IDX]] [[RT]] [[EMA51]] [[REV]] potentially SELL [[22220]] - UTC7 " + str(waktu) + " | UTC0 " + str(waktu_utc)            
-                            print(msg)
-                            if (c3 < c2) or (c3 < l2) and (c3 < o3):
-                                if counter < 75: 
-                                    if msg != msg_buy_adx:                                                                                                                                                                                                                                                                                                                        
-                                        orderBuySell(1,"put",22220)
-                                        telegram_bot_sendtext(msg)                    
-                                        msg_buy_adx = msg  
-                                        last_amount = def_amount                        
-
-                if (c3 > ema14) or (c3 > ema28) and (ema28 > ema14) and (ema14 > ema5_1) and (o2 < ema14) and (ema14_5 > ema28_5):
-                    place_order = (25222 if win_status == True else win_rate_adjustment * 25222)                
-                    print("place_order CALL -> ",place_order)
-                    if c2 < ema5_1:
-                        if (diff_ema5_1 < 1) and (c3 < ema5_1) and (c2 < ema5_1):
-                            msg = "⬇️ [[CRY-IDX]] [[RT]] [[EMA51]] [[REV]] potentially SELL [[22221]] - UTC7 " + str(waktu) + " | UTC0 " + str(waktu_utc)            
-                            print(msg)                            
-                            if c52_dibawah_ema5 == True:
-                                if msg != msg_buy_adx:
-                                    orderBuySell(1,"put",22221)
-                                    telegram_bot_sendtext(msg)                                    
-                                    msg_buy_adx = msg  
-                                    last_amount = def_amount 
-
-                        if (c3 > c2) or (c3 > h2) and (c3 > o3): 
-                            if (c52_diatas_ema5 == True) or (c2 > ema5_1) and (c3 > o3):
-                                msg = "⬆️ [[CRY-IDX]] [[RT]] [[EMA51]] [[REV]] potentially BUY [[21220]] - UTC7 " + str(waktu) + " | UTC0 " + str(waktu_utc)            
-                                print(msg)
-                                if (last_minute > 2):
-                                    if h3 < h2 and c2 < ema5_1 and c3 < c2:
-                                        if (counter < 75 and o2 > ema5_1):
-                                            if msg != msg_buy_adx:                                            
-                                                orderBuySell(1,"call",21220)
-                                                telegram_bot_sendtext(msg)                    
-                                                msg_buy_adx = msg  
-                                                last_amount = def_amount 
-                            if (c52_dibawah_ema5 == True) and (diff_ema5_1 > 10):
-                                if (h53 > h52) and (h52 < h51):
-                                    msg = "⬇️ [[CRY-IDX]] [[RT]] [[EMA51]] [[REV]] potentially SELL [[21221]] - UTC7 " + str(waktu) + " | UTC0 " + str(waktu_utc)            
-                                    print(msg)
-                                    if msg != msg_buy_adx:                                                                                
-                                        orderBuySell(4,"put",21221, mnt)
-                                        telegram_bot_sendtext(msg)                    
-                                        msg_buy_adx = msg  
-                                        last_amount = def_amount 
+    def getEMA8cross50Down(self):
+        return self.is_ema8_cross50_down
 
 
-            if (c3 < min(maxlow)) and (diff_ema28 > 30) and ((c3 > o3) or (c3 > c2)):
-                    msg = "⬆️ [[CRY-IDX]] [[RT]] [[EMA51]] [[REV30]] potentially BUY [[25023]] - UTC7 " + str(waktu) + " | UTC0 " + str(waktu_utc)            
-                    print(msg)
-                    place_order = (25023 if win_status == True else win_rate_adjustment * 25023)                
-                    print("place_order CALL -> ",place_order)
-                    if (c3 > c2) or (c3 > h2) and (c3 > o3): 
-                        if (c52_diatas_ema5 == True) and (c3 > c2):
-                            if msg != msg_buy_adx:                                                                                                         
-                                orderBuySell(4,"call",25023, mnt)
-                                telegram_bot_sendtext(msg)                    
-                                msg_buy_adx = msg  
-                                last_amount = def_amount 
-            
-            if (c3 < ema5_1) and ((c3 < ema14) or (c3 < ema28)) and (ema28 < ema14) and (ema14 < ema5_1):
-                msg = "⬆️ [[CRY-IDX]] [[RT]] [[EMA51]] [[REV]] potentially BUY [[25024]] - UTC7 " + str(waktu) + " | UTC0 " + str(waktu_utc)            
-                print(msg)
-                place_order = (25024 if win_status == True else win_rate_adjustment * 25024)                
-                print("place_order CALL -> ",place_order)
-                if (c3 > c2) or (c3 > h2) and (c3 > o3):   
-                    if (c52_diatas_ema5 == True) and (c3 > c2) and (c2 > c1) and (c3 > ema5_1):  
-                        if msg != msg_buy_adx:                                                                                                                                 
-                            orderBuySell(4,"call",25024,mnt)
-                            telegram_bot_sendtext(msg)                    
-                            msg_buy_adx = msg  
-                            last_amount = def_amount                        
-
-            if (c2_dibawah_ema5_1 == True) and (c3 < c2) and (diff_ema5_1 < 1):
-                msg = "⬇️ [[CRY-IDX]] [[RT]] [[EMA51]] [[NXT]] potentially SELL [[25113]] - UTC7 " + str(waktu) + " | UTC0 " + str(waktu_utc)            
-                print(msg)
-                if (c2 < ema5) and (c2 < ema5_1) and (h2 < h1) and (h3 < h2):
-                    if (h53 < h52) and (c3 < o3):
-                        if (counter < 75) and (c52_dibawah_ema5 == True):
-                            if msg != msg_buy_adx:                                                                                                                                                                                         
-                                orderBuySell(1,"put",25113,1)
-                                telegram_bot_sendtext(msg)                    
-                                msg_buy_adx = msg  
-                                last_amount = def_amount
-
-
-        '''
-        end EMA analysis
-        '''
-
-def telegram_bot_sendtext(bot_message):    
-    bot_token = botToken
-    bot_chatID = gchatId
-    send_text = 'https://api.telegram.org/bot' + bot_token + '/sendMessage?chat_id=' + bot_chatID + '&parse_mode=Markdown&text=' + bot_message
-    response = requests.get(send_text)
-    return response.json()    
-
-
-def telegram_bot_sendchart():    
-    bot_token = botToken
-    bot_chatID = gchatId
-    dtt = datetime.now(tzinfo)
-    charttime = dtt.strftime('%Y%m%d-%H%M')
-    
-    response = requests.post(
-        "https://api.telegram.org/bot"+bot_token+"/sendPhoto?chat_id="+bot_chatID,
-        files={"photo": open("BinomoStream.png", "rb")}
-    )
-    os.rename("BinomoStream.png", "BinomoStream-" + str(charttime) + ".png")    
-    os.remove("BinomoStream.png")
-    return response.json()    
-
-def isclose(a, b, rel_tol=1e-09, abs_tol=0.0):
-    return abs(a-b) <= max(rel_tol * max(abs(a), abs(b)), abs_tol)
-
-
-def setLastSignal(sgnl,val):
-    global last_signal, val_signal
-    last_signal = sgnl
-    val_signal = val
-
-def getLastSignal():
-    global last_signal, val_signal
-    return [last_signal,val_signal]
-
-def setBalance(lbalance):
-    global latest_balance
-    latest_balance = lbalance
-
-def getBalance():
-    global latest_balance
-    return latest_balance
-
-def orderBuySell(typeorder, call_put, amnt=14000, duration=1):
-    global loop_socket, latest_balance
-    print("loop_socket -> ",loop_socket)
-    loop_socket+=1
-    pb = cc.Placebid(typeorder, call_put, amnt, duration, loop_socket)
-    balance = pb.getCurrentBalance()
-    setBalance(balance)
-    
-def getLastMinute(mnt):
-    resmin = mnt % 5 
-    left_minute = 5 - resmin
-    return left_minute
-
-def get_ema1428(duration):
-    ema28 = EMA_14_28()
-    return ema28.getData(duration)
-
-if __name__ == "__main__":
-    ws = websocket.WebSocketApp("wss://as.binomo.com/",
-                              on_message = on_message,
-                              on_error = on_error,
-                              on_close = on_close,
-                              on_ping=on_ping,
-                              on_pong=on_pong
-                              )
-    ws.on_open = on_open
-    
-    keep_on = True
-    while keep_on:
-      try:
-        ping_data = {"topic":"asset:Z-CRY/IDX","event":"ping","payload":{},"ref": str(counter_ping),"join_ref":"28"}
-        keep_on = ws.run_forever(ping_interval=5, ping_payload=json.dumps(ping_data))
-      except:
-        print("[Websocket Error]")
+if __name__ == '__main__':
+    bit = Binongtot()
+    asyncio.run(bit.connect())        
