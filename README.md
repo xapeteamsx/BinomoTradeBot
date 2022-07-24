@@ -19,4 +19,4 @@ $100 USD VPS per month running 24 hours + $100 USD onetime script purchase and g
 
 # Contact
 
-For demo and purchase full script contact t.me/apeteams
+For demo and purchase full script contact t.me/apeteams or send us email to xapeteamsx@gmail.com
