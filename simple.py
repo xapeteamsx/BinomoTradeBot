@@ -26,7 +26,7 @@ Do not open any position until appears new signal
 Retest is when price below signal but last and past candle is over or below signal
 This strategy is valid for 2-3 minutes and more (5 minutes)
 CCI used for reversal signal
-Note: Backtest result about this strategy is over 70% and this is the aggressive signal suitable for autonomous daily trade
+Note: Backtest result about this strategy is over 70% win-rate and this is the aggressive signal suitable for autonomous daily trade
 This strategy already combined with martingale (https://en.wikipedia.org/wiki/Martingale_(probability_theory)) strategy as compensation for your loss trade
 Contact us via telegram @apeteams or email xapeteamsx@gmail.com
 '''
