@@ -322,7 +322,7 @@ class Binongtot(object):
             '''
 
             # trend signal (bearis or bullish)
-            if support_down == True and resistance_down == True and is_down == True and pre_flo == False:
+            if support_down == True and resistance_down == True and is_down == True and pre_flo == False and curr_price < last_resistance::
                 msg = "⬇ [[{}]] [[SR-DOWNTREND]] potentially SELL [[23011]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))                
                 if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
                     self.orderBuySell(4,"put",self.bid_price, set_time_put)
@@ -330,7 +330,7 @@ class Binongtot(object):
                     self.msg_buy = msg  
                     self.lasttime = str(timesx)
 
-            if support_up == True and resistance_up == True and is_up == True and pre_fhi == False:
+            if support_up == True and resistance_up == True and is_up == True and pre_fhi == False and curr_price > last_support:
                 msg = "⬆ [[{}]] [[SR-UPTREND]] potentially BUY [[23011]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))                
                 if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
                     self.orderBuySell(4,"call",self.bid_price, set_time_call)
