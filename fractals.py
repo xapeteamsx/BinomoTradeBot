@@ -30,7 +30,7 @@ class Binongtot(object):
         self.assetRic = self.assetConf["assetRic"]
         self.currency = self.assetConf["currency"]
         self.amount = self.assetConf["currency"]
-        self.uagent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.14; rv:102.0) Gecko/20100101 Firefox/102.0"        
+        self.uagent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/103.0.0.0 Safari/537.36"        
         self.bid_price = self.amount
         self.lowbid = 20000
         self.ctr_minute = 1
