@@ -13,8 +13,6 @@ from telethon import TelegramClient
 import requests
 import logging
 
-# turnamen dimulai jam 9 UTC
-
 class Binongtot(object):
     def __init__(self):
         self._aw_conn = None
