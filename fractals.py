@@ -13,6 +13,7 @@ from telethon import TelegramClient
 import requests
 import logging
 
+# turnamen dimulai jam 9 UTC
 
 class Binongtot(object):
     def __init__(self):
@@ -29,9 +30,7 @@ class Binongtot(object):
         self.assetRic = self.assetConf["assetRic"]
         self.currency = self.assetConf["currency"]
         self.amount = self.assetConf["currency"]
-        self.uagent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/103.0.0.0 Safari/537.36"        
-        self.botToken = self.assetConf["botToken"]
-        self.gchatId = self.assetConf["gchatId"]
+        self.uagent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.14; rv:102.0) Gecko/20100101 Firefox/102.0"        
         self.bid_price = self.amount
         self.lowbid = 20000
         self.ctr_minute = 1
@@ -44,6 +43,8 @@ class Binongtot(object):
         self.val_resistance = []        
         self.state_val_support = []
         self.state_val_resistance = []
+        self.df_support = pd.DataFrame()
+        self.df_resistance = pd.DataFrame()
 
         # set time and timezone
         timezone_offset = +7.0 
@@ -56,6 +57,10 @@ class Binongtot(object):
         utc_present = present_utc + timedelta(hours=-7) + timedelta(minutes=+1)
         self.curr_utc = utc_present.strftime('%H:%M')
 
+        # setup telegram bot
+        self.botToken = '5385698531:AAGpjn6x98yM_xR76i_GcsCpXf6VR4nbQU0'
+        self.gchatId = '-1001791132176'
+        
         self.tempbin = self.getOnlineData()
         self.pollHost = "wss://as.binomo.com/"
         self.cookie = "l=; authtoken="+self.authToken+"; device_id="+self.deviceId+"; device_type=web"
@@ -96,19 +101,23 @@ class Binongtot(object):
         dtt = datetime.now(self.tzinfo)
         wibtime = dtt.strftime('%H:%M')
         charttime = dtt.strftime('%Y-%m-%d %H:%M:00')
+        pd.set_option('display.float_format', '{:.11f}'.format)
 
         data.index = pd.to_datetime(data.Datetime)
-        df1 = data['rate'].resample('1Min').agg(
+        df1 = data['rate'].resample('15s').agg(
                                     {'open': 'first', 
                                      'high': 'max', 
                                      'low': 'min', 
                                      'close': 'last'})
         
+
         d1 = pd.DataFrame(df1).reset_index()
-        d1.columns = ['Datetime','open', 'high','low','close']  
+        d1.columns = ['Datetime','Open', 'High','Low','Close']  
 
         self.counter = int(data["created_at"][-1].split(":")[-1].split(".")[0])
         print("xctr -> ", self.counter)
+
+
         curr_close = 0
         current_price = 0
         curopen = 0
@@ -122,11 +131,13 @@ class Binongtot(object):
             curopen = df1['open'][-1]
             current_price = df1['close'][-1]
         
+
         print("process_om -> currency: ", self.assetConf['currency'])
         print("process_om -> curopen: ", curopen)
         print("process_om -> current_price: ", current_price)
 
-        self.mergeDataWSOnline(self.counter, d1)
+        #self.mergeDataWSOnline(self.counter, d1)
+        self.fractals_15s(self.counter, d1)
 
     def mergeDataWSOnline(self, ctr, wsdata):        
 
@@ -172,10 +183,13 @@ class Binongtot(object):
         merge_ws_dataonline.index = pd.to_datetime(merge_ws_dataonline.Datetime)
         merge_ws_dataonline["Volume"] = merge_ws_dataonline.Volume * (10 ** count_lencur)
         
-        self.fractals_strategy(ctr, merge_ws_dataonline, count_lencur, wsdata)
+
+        self.fractals_as_sr(ctr, merge_ws_dataonline, count_lencur, wsdata)
 
 
-    def fractals_strategy(self, ctr, merge_ws_dataonline, count_lencur, wsdata):
+    def fractals_15s(self, ctr, wsdata):
+
+        wsdata = wsdata.set_index("Datetime")
 
         dtb = datetime.now(self.tzinfo)
         present_utc = datetime.now()
@@ -186,24 +200,23 @@ class Binongtot(object):
         utc_present = present_utc + timedelta(hours=-7) + timedelta(minutes=+1)
         timesx_utc = utc_present.strftime('%H:%M')
         
-        curr_high = merge_ws_dataonline['High'][-1]
-        curr_low = merge_ws_dataonline['Low'][-1]
-        curr_open = merge_ws_dataonline['Open'][-1]
-        curr_price = merge_ws_dataonline['Close'][-1]
-        op1 = merge_ws_dataonline['Open'].shift(1)[-1]
-        op2 = merge_ws_dataonline['Open'].shift(2)[-1]
-        cl1 = merge_ws_dataonline['Close'].shift(1)[-1]
-        cl2 = merge_ws_dataonline['Close'].shift(2)[-1]
-        ll1 = merge_ws_dataonline['Low'].shift(1)[-1]
-        ll2 = merge_ws_dataonline['Low'].shift(2)[-1]
-        hh1 = merge_ws_dataonline['High'].shift(1)[-1]
-        hh2 = merge_ws_dataonline['High'].shift(1)[-1]
+        curr_high = wsdata['High'][-1]
+        curr_low = wsdata['Low'][-1]
+        curr_open = wsdata['Open'][-1]
+        curr_price = wsdata['Close'][-1]
+        op1 = wsdata['Open'].shift(1)[-1]
+        op2 = wsdata['Open'].shift(2)[-1]
+        cl1 = wsdata['Close'].shift(1)[-1]
+        cl2 = wsdata['Close'].shift(2)[-1]
+        ll1 = wsdata['Low'].shift(1)[-1]
+        ll2 = wsdata['Low'].shift(2)[-1]
+        hh1 = wsdata['High'].shift(1)[-1]
+        hh2 = wsdata['High'].shift(2)[-1]
 
-        ind = Indicators(merge_ws_dataonline)
-        ind.bollinger_bands()
-        ind.ema(period=8, column_name='ema8', apply_to='Close')   
+        ind = Indicators(wsdata)
         ind.fractals(column_name_high='fractals_high', column_name_low='fractals_low')
-        ind.cci()
+        ind.bollinger_bands()
+        ind.ema(period=10, column_name='ema10', apply_to='Close')   
         dof = ind.df
 
         # fractals
@@ -245,80 +258,85 @@ class Binongtot(object):
             self.state_val_support.append(0)
             self.state_val_resistance.append(0)
 
-        #cci
-        curr_cci = dof['cci'][-1]
-        last_cci = dof['cci'].shift(1)[-1]
-        past_cci = dof['cci'].shift(2)[-1]
-
-        boltop = dof['bollinger_top'][-1]
-        bolmid = dof['bollinger_mid'][-1]
-        boltom = dof['bollinger_bottom'][-1]
-        ema8 = dof['ema8'][-1]
+        ema10 = dof['ema10'][-1]
         
-        is_upper_bb = (curr_price > ema8 and cl1 > ema8)
-        is_upper_signal = (curr_price > ema8 and cl1 > ema8)
+        is_upper_signal = (curr_price > ema10 and curr_open > ema10 and cl1 > ema10 and op1 > ema10) 
+        is_lower_signal = (curr_price < ema10 and curr_open < ema10 and cl1 < ema10 and op1 < ema10) 
 
-        set_time_call = (3 if is_upper_signal == True else 1)
-        set_time_put = (2 if is_upper_signal == True else 1)
+        is_up = (curr_price > cl1 and curr_price > curr_open and curr_price > hh1) 
+        is_down = (curr_price < cl1 and curr_price < curr_open and curr_price < ll1)
 
-        # get highest and lowest price from past and current 3 candles
-        doh = dof.tail(3)
-        get_max_high = doh[['High', 'High', 'High']].max().max() 
-        get_min_low = doh[['Low', 'Low', 'Low']].min().min() 
+        set_time_call = (2 if is_upper_signal == True else 1)
+        set_time_put = (1 if is_upper_signal == True else 2)
 
-        print("DataFrame -> ", dof.tail(10))
-        print("curr_low -> ", merge_ws_dataonline['Low'][-1])
-        print("curr_high -> ", merge_ws_dataonline['High'][-1])
-        print("get_max_high -> ", get_max_high)
-        print("get_min_low -> ", get_min_low)
-        print("is_upper_signal -> ", is_upper_signal)
+        print(dof.tail(10))
 
-        ctr_exec = 20
-        param_boltom = boltom - 10
-        param_boltop = boltop - 10
-        
-        if ctr % 5:
+        hhres = self.val_resistance
+        llsup = self.val_support
 
-            if fhi == True and (curr_price < hh1 and curr_price < op1) and curr_price < param_boltom:
-                msg = "⬇ [[{}]] [[WS]] [[FRACTALS-DOWN]] potentially SELL [[23011]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))                
+        if fhi == True and is_down == True and pre_flo == False:
+            msg = "⬇ [[{}]] [[FRACTALS-15s-DOWN]] potentially SELL [[23011]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))            
+            if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
+                self.orderBuySell(4,"put",self.bid_price, set_time_put)
+                self.telegram_bot_sendtext(msg)                    
+                self.msg_buy = msg  
+                self.lasttime = str(timesx)
+
+        if flo == True and is_up == True and pre_fhi == False:
+            msg = "⬆ [[{}]] [[FRACTALS-15s-UP]] potentially BUY [[23011]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))                
+            if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
+                self.orderBuySell(4,"call",self.bid_price, set_time_call)
+                self.telegram_bot_sendtext(msg)                    
+                self.msg_buy = msg  
+                self.lasttime = str(timesx)
+
+        if len(hhres) > 1 and len(llsup) > 1:   
+            self.df_support = pd.DataFrame(llsup, columns=['support'])            
+            self.df_resistance = pd.DataFrame(hhres, columns=['resistance'])       
+
+            last_resistance= hhres[len(hhres)-1]
+            past_resistance = hhres[len(hhres)-2]
+            last_support = llsup[len(llsup)-1]
+            past_support = llsup[len(llsup)-2]
+
+            support_down = past_support > last_support
+            support_up = last_support > past_support
+            resistance_down = past_resistance > last_resistance
+            resistance_up = last_resistance > past_resistance
+
+            '''
+            print("val_support -> ", self.val_support)                
+            print("val_resistance -> ", self.val_resistance)                            
+            print("past_support -> ", past_support)                
+            print("last_support -> ", last_support)                
+            print("past_resistance -> ", past_resistance)                
+            print("last_resistance -> ", last_resistance)
+            print("fhi -> ", fhi)
+            print("flo -> ", flo)
+            print("support_down -> ", support_down)
+            print("support_up -> ", support_up)
+            print("resistance_down -> ", resistance_down)
+            print("resistance_up -> ", resistance_up)
+            print("support_down == True and resistance_down == True -> ", support_down == True and resistance_down == True)
+            print("support_up == True and resistance_up == True -> ", support_up == True and resistance_up == True)
+            '''
+
+            # trend signal (bearis or bullish)
+            if support_down == True and resistance_down == True and is_down == True and pre_flo == False:
+                msg = "⬇ [[{}]] [[SR-DOWNTREND]] potentially SELL [[23011]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))                
                 if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
-                    self.orderBuySell(4,"put",self.bid_price, set_time_call)
+                    self.orderBuySell(4,"put",self.bid_price, set_time_put)
                     self.telegram_bot_sendtext(msg)                    
                     self.msg_buy = msg  
                     self.lasttime = str(timesx)
 
-            if flo == True and (curr_price > ll1 and curr_price > cl1) and curr_price < param_boltop:
-                msg = "⬆ [[{}]] [[WS]] [[FRACTALS-UP]] potentially BUY [[23012]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))                
+            if support_up == True and resistance_up == True and is_up == True and pre_fhi == False:
+                msg = "⬆ [[{}]] [[SR-UPTREND]] potentially BUY [[23011]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))                
                 if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
                     self.orderBuySell(4,"call",self.bid_price, set_time_call)
                     self.telegram_bot_sendtext(msg)                    
                     self.msg_buy = msg  
                     self.lasttime = str(timesx)
-
-            if fhi_forward == True and (curr_price < ll1 and curr_price < curr_open) and ctr > ctr_exec:
-                msg = "⬇ [[{}]] [[WS]] [[FRACTALS-FWD-DOWN]] potentially SELL [[25011]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))                
-                if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
-                    self.orderBuySell(4,"put",self.bid_price, set_time_call)
-                    self.telegram_bot_sendtext(msg)                    
-                    self.msg_buy = msg  
-                    self.lasttime = str(timesx)
-
-            if flo_forward == True and (curr_price > hh1 and curr_price > curr_open) and ctr > ctr_exec:
-                msg = "⬆ [[{}]] [[WS]] [[FRACTALS-FWD-UP]] potentially BUY [[25012]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))                
-                if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
-                    self.orderBuySell(4,"call",self.bid_price, set_time_call)
-                    self.telegram_bot_sendtext(msg)                    
-                    self.msg_buy = msg  
-                    self.lasttime = str(timesx)
-
-            if len(self.val_resistance) > 0 and len(self.val_support) > 0:
-                get_fhi_price = self.val_resistance[-1]
-                get_flo_price = self.val_support[-1]
-                print("val_support -> ", self.val_support)
-                print("val_resistance -> ", self.val_resistance)                
-                print("get_fhi_price -> ", get_fhi_price)
-                print("get_flo_price -> ", get_flo_price)
-
 
     async def toDataframe(self, msg):            
         if msg['data'][0]['assets']:
@@ -382,14 +400,12 @@ class Binongtot(object):
         for i in assetList:
             if i["name"] == currency:assetId=i["id"]; assetRic=i["ric"]
 
-        botToken = settings["botToken"]
-        gchatId = settings["gchatId"]
         authToken = settings["authToken"]
         walletType = settings["walletType"]
         deviceId = settings["deviceId"]
         tournament_id = settings["tournament_id"]
 
-        return {"assetId": assetId, "assetRic": assetRic, "currency":currency, "authToken": authToken, "deviceId": deviceId, "tournament_id": tournament_id, "walletType": walletType, "botToken": botToken, "gchatId": gchatId}
+        return {"assetId": assetId, "assetRic": assetRic, "currency":currency, "authToken": authToken, "deviceId": deviceId, "tournament_id": tournament_id, "walletType": walletType}
 
     def getOnlineData(self):
         binomodata = Ticker()
