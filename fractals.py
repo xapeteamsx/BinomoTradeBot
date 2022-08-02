@@ -13,10 +13,9 @@ from telethon import TelegramClient
 import requests
 import logging
 import numpy as np
-import functools as fn
 
 '''
-Fractals with Heiken Ashi candle strategy
+fractals and cci with heiken ashi candle strategy
 '''
 
 class Binongtot(object):
@@ -49,6 +48,9 @@ class Binongtot(object):
         self.state_val_resistance = []
         self.df_support = pd.DataFrame()
         self.df_resistance = pd.DataFrame()
+        self.hbuy = []
+        self.hsell = []
+        self.dataintv = 15
 
         # set time and timezone
         timezone_offset = +7.0 
@@ -65,7 +67,7 @@ class Binongtot(object):
         self.botToken = ''
         self.gchatId = ''
         
-        #self.tempbin = self.getOnlineData()
+        self.tempbin = self.getOnlineData()
         self.pollHost = "wss://as.binomo-financing.com/"
         self.cookie = "l=; authtoken="+self.authToken+"; device_id="+self.deviceId+"; device_type=web"
         self.headers = {'User-Agent': self.uagent, 'Cookie': self.cookie}
@@ -116,7 +118,7 @@ class Binongtot(object):
         
 
         d1 = pd.DataFrame(df1).reset_index()
-        d1.columns = ['Datetime','Open', 'High','Low','Close']  
+        d1.columns = ['Datetime','Open', 'High','Low','Close']          
 
         self.counter = int(data["created_at"][-1].split(":")[-1].split(".")[0])
         print("xctr -> ", self.counter)
@@ -140,67 +142,21 @@ class Binongtot(object):
         print("process_om -> curopen: ", curopen)
         print("process_om -> current_price: ", current_price)
 
-        #self.mergeDataWSOnline(self.counter, d1)
-        
         hk = self.heikin_ashi(d1)
-
         actual_trades = self.heiken_ashi_strategy(hk)    
         actual_trades.set_index("Datetime")    
         d1.set_index("Datetime")
         
-        dfm = actual_trades.merge(d1, on='Datetime', how='left')
+        dfm = hk.merge(actual_trades, on='Datetime', how='left')
+        print("heikin_ashi -> ",dfm)
         
         if len(dfm.index) > 0:
             self.fractals_15s(self.counter, dfm)
 
 
-    def mergeDataWSOnline(self, ctr, wsdata):        
-
-        counter = ctr
-        tempdata = {}
-        historydata = []
-
-        pd.set_option('display.float_format', '{:.11f}'.format)
-        
-        wsdata = wsdata.set_index('Datetime')
-
-        curr_open = wsdata['open'][-1]
-
-        cur_digits = str(curr_open).split('.')
-        count_lencur = len(cur_digits[1])
-
-        dtb = datetime.now(self.tzinfo)
-        present_utc = datetime.now()
-        #unix_timestamp = dtb.timestamp(presentDate)*1000
-        presentDate = dtb + timedelta(minutes=+1)
-        timesx = presentDate.strftime('%H:%M')
-
-        present_utc = datetime.now()
-        utc_present = present_utc + timedelta(hours=-7) + timedelta(minutes=+1)
-        timesx_utc = utc_present.strftime('%H:%M')
-
-        temp_dfol = self.tempbin["d1"]
-
-        # merge data websocket and one-day history data
-        df_ws = pd.DataFrame(wsdata, columns=['open', 'high', 'low','close'])
-        wsdata_copy = df_ws.rename(columns = {'open':'Open', 'high':'High', 'low':'Low', 'close':'Close'})
-        wsdata_copy['Datetime'] = pd.to_datetime(wsdata_copy.index) + timedelta(minutes=1)
-        temp_dfol['Datetime'] = pd.to_datetime(temp_dfol.Datetime)
-        wsdata_copy.index = wsdata_copy['Datetime']
-        temp_dfol['Datetime'] = temp_dfol['Datetime'].dt.strftime('%Y-%m-%d %H:%M:%S')
-        vol_copy = (wsdata_copy['High'] - wsdata_copy['Low']) - (wsdata_copy['Open'] - wsdata_copy['Close'])
-        wsdata_copy['Volume'] = vol_copy
-
-        # dropping last 1 row to avoid duplicate
-        temp_dfol = temp_dfol.iloc[:-1]
-
-        merge_ws_dataonline = pd.concat([temp_dfol, wsdata_copy]).drop_duplicates()
-        merge_ws_dataonline.index = pd.to_datetime(merge_ws_dataonline.Datetime)
-        merge_ws_dataonline["Volume"] = merge_ws_dataonline.Volume * (10 ** count_lencur)
-        
-
     def fractals_15s(self, ctr, wsdata):
-
+        
+        wsdata = wsdata.rename(columns = {'ha_open':'Open', 'ha_high':'High', 'ha_low':'Low', 'ha_close':'Close'})
         wsdata = wsdata.set_index("Datetime")
 
         dtb = datetime.now(self.tzinfo)
@@ -231,12 +187,13 @@ class Binongtot(object):
         ha_long = wsdata['long'][-1]
         ha_short_exit = wsdata['short_exit'][-1]
 
-        ha_up = (ha_long_exit == True and ha_short == True) or (ha_short == True)
-        ha_down = (ha_long == True and ha_short_exit == True) or (ha_short_exit == True)
+        ha_up = (ha_long_exit == True and ha_short == True)
+        ha_down = (ha_long == True and ha_short_exit == True)
 
         ind = Indicators(wsdata)
         ind.fractals(column_name_high='fractals_high', column_name_low='fractals_low')
         ind.ema(period=10, column_name='ema10', apply_to='Close')   
+        ind.cci()        
         dof = ind.df
 
         # fractals
@@ -279,7 +236,15 @@ class Binongtot(object):
             self.state_val_resistance.append(0)
 
         ema10 = dof['ema10'][-1]
-        
+        curr_cci = dof['cci'][-1]
+        last_cci = dof['cci'].shift(1)[-1]
+        past_cci = dof['cci'].shift(2)[-1]
+
+        is_cci_up = last_cci > past_cci
+        is_cci_down = last_cci < past_cci
+        cci_top = (last_cci > 100 and past_cci > 100) or curr_cci > 100
+        cci_down = (last_cci < 100 and past_cci < 100) or curr_cci < 100
+
         is_upper_signal = (curr_price > ema10 and curr_open > ema10 and cl1 > ema10 and op1 > ema10) 
         is_lower_signal = (curr_price < ema10 and curr_open < ema10 and cl1 < ema10 and op1 < ema10) 
 
@@ -290,28 +255,87 @@ class Binongtot(object):
         set_time_put = (1 if is_upper_signal == True else 2)
 
         print(dof.tail(10))
+        
+        cross_ema_up = cl1 < ema10 and curr_price > ema10 and curr_price > curr_open
+        cross_ema_down = cl1 > ema10 and curr_price < ema10 and curr_open < ema10
 
+        print("cross_ema_up -> ", cross_ema_up)                
+        print("cross_ema_down -> ", cross_ema_down)                
+        print("is_upper_signal -> ", is_upper_signal)                
+        print("is_lower_signal -> ", is_lower_signal)                
+        print("is_up -> ", is_up)                
+        print("is_down -> ", is_down)                
         print("val_support -> ", self.val_support)                
         print("val_resistance -> ", self.val_resistance)                
 
         hhres = self.val_resistance
         llsup = self.val_support
 
-        if fhi == True and ha_down == True:
-            msg = "⬇ [[{}]] [[FRACTALS-15s-DOWN]] potentially SELL [[23011]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))            
-            if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
-                self.orderBuySell(4,"put",self.bid_price, set_time_put)
-                self.telegram_bot_sendtext(msg)                    
-                self.msg_buy = msg  
-                self.lasttime = str(timesx)
+        if ctr % 10:
 
-        if flo == True and ha_up == True:
-            msg = "⬆ [[{}]] [[FRACTALS-15s-UP]] potentially BUY [[23012]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))                
-            if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
-                self.orderBuySell(4,"call",self.bid_price, set_time_call)
-                self.telegram_bot_sendtext(msg)                    
-                self.msg_buy = msg  
-                self.lasttime = str(timesx)
+            if is_down == True and ha_down == True and curr_cci > -100:
+                msg = "⬇ [[{}]] [[HEIKIN-ASHI-DOWN]] potentially SELL [[23011]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))            
+                if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
+                    self.orderBuySell(4,"put",self.bid_price, set_time_put)
+                    self.telegram_bot_sendtext(msg)                    
+                    self.msg_buy = msg  
+                    self.lasttime = str(timesx)
+
+            if is_up == True and ha_up == True and curr_cci < 100:
+                msg = "⬆ [[{}]] [[HEIKIN-ASHI-UP]] potentially BUY [[23012]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))                
+                if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
+                    self.orderBuySell(4,"call",self.bid_price, set_time_call)
+                    self.telegram_bot_sendtext(msg)                    
+                    self.msg_buy = msg  
+                    self.lasttime = str(timesx)
+
+            if cross_ema_down == True:
+                msg = "⬇ [[{}]] [[CROSS-EMA-DOWN]] potentially SELL [[23013]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))            
+                if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
+                    self.orderBuySell(4,"put",self.bid_price, set_time_put)
+                    self.telegram_bot_sendtext(msg)                    
+                    self.msg_buy = msg  
+                    self.lasttime = str(timesx)
+
+            if cross_ema_up == True:
+                msg = "⬆ [[{}]] [[CROSS-EMA-UP]] potentially BUY [[23014]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))                
+                if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
+                    self.orderBuySell(4,"call",self.bid_price, set_time_call)
+                    self.telegram_bot_sendtext(msg)                    
+                    self.msg_buy = msg  
+                    self.lasttime = str(timesx)
+
+            if ha_down == True and curr_cci > -100:
+                msg = "⬇ [[{}]] [[HEIKIN-ASHI-DOWN]] potentially SELL [[23015]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))            
+                if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
+                    self.orderBuySell(4,"put",self.bid_price, set_time_put)
+                    self.telegram_bot_sendtext(msg)                    
+                    self.msg_buy = msg  
+                    self.lasttime = str(timesx)
+
+            if ha_up == True and curr_cci < 100:
+                msg = "⬆ [[{}]] [[HEIKIN-ASHI-UP]] potentially BUY [[23016]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))                
+                if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
+                    self.orderBuySell(4,"call",self.bid_price, set_time_call)
+                    self.telegram_bot_sendtext(msg)                    
+                    self.msg_buy = msg  
+                    self.lasttime = str(timesx)
+
+            if fhi == True and is_down == True and curr_cci > -100:
+                msg = "⬇ [[{}]] [[FRACTALS-15s-DOWN]] potentially SELL [[23017]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))            
+                if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
+                    self.orderBuySell(4,"put",self.bid_price, set_time_put)
+                    self.telegram_bot_sendtext(msg)                    
+                    self.msg_buy = msg  
+                    self.lasttime = str(timesx)
+
+            if flo == True and is_up == True and curr_cci < 100:
+                msg = "⬆ [[{}]] [[FRACTALS-15s-UP]] potentially BUY [[23018]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))                
+                if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
+                    self.orderBuySell(4,"call",self.bid_price, set_time_call)
+                    self.telegram_bot_sendtext(msg)                    
+                    self.msg_buy = msg  
+                    self.lasttime = str(timesx)
 
         if len(hhres) > 1 and len(llsup) > 1:   
             self.df_support = pd.DataFrame(llsup, columns=['support'])            
@@ -327,7 +351,6 @@ class Binongtot(object):
             resistance_down = past_resistance > last_resistance
             resistance_up = last_resistance > past_resistance
 
-            '''
             print("past_support -> ", past_support)                
             print("last_support -> ", last_support)                
             print("past_resistance -> ", past_resistance)                
@@ -340,24 +363,23 @@ class Binongtot(object):
             print("resistance_up -> ", resistance_up)
             print("support_down == True and resistance_down == True -> ", support_down == True and resistance_down == True)
             print("support_up == True and resistance_up == True -> ", support_up == True and resistance_up == True)
-            '''
 
-            # trend signal (bearis or bullish)
-            if support_down == True and resistance_down == True and ha_down == True:
-                msg = "⬇ [[{}]] [[SR-DOWNTREND]] potentially SELL [[23011]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))                
-                if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
-                    self.orderBuySell(4,"put",self.bid_price, set_time_put)
-                    self.telegram_bot_sendtext(msg)                    
-                    self.msg_buy = msg  
-                    self.lasttime = str(timesx)
+            if ctr % 5:
+                if support_down == True and resistance_down == True and is_down == True and curr_cci > -100:
+                    msg = "⬇ [[{}]] [[SR-DOWNTREND]] potentially SELL [[23019]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))                
+                    if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
+                        self.orderBuySell(4,"put",self.bid_price, set_time_put)
+                        self.telegram_bot_sendtext(msg)                    
+                        self.msg_buy = msg  
+                        self.lasttime = str(timesx)
 
-            if support_up == True and resistance_up == True and ha_up == True:
-                msg = "⬆ [[{}]] [[SR-UPTREND]] potentially BUY [[23012]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))                
-                if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
-                    self.orderBuySell(4,"call",self.bid_price, set_time_call)
-                    self.telegram_bot_sendtext(msg)                    
-                    self.msg_buy = msg  
-                    self.lasttime = str(timesx)
+                if support_up == True and resistance_up == True and is_up == True  and curr_cci < 100:
+                    msg = "⬆ [[{}]] [[SR-UPTREND]] potentially BUY [[23020]] - UTC7 {} | UTC0 {}".format(self.currency, str(timesx), str(timesx_utc))                
+                    if (msg != self.msg_buy) and (self.lasttime != str(timesx)):
+                        self.orderBuySell(4,"call",self.bid_price, set_time_call)
+                        self.telegram_bot_sendtext(msg)                    
+                        self.msg_buy = msg  
+                        self.lasttime = str(timesx)
 
 
     async def toDataframe(self, msg):            
@@ -431,7 +453,7 @@ class Binongtot(object):
 
     def getOnlineData(self):
         binomodata = Ticker()
-        data = binomodata.getData()
+        data = binomodata.getData(self.dataintv)
         if len(data["d1"]) > 0:
             return data
         
