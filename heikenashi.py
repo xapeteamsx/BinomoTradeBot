@@ -16,7 +16,7 @@ import logging
 import numpy as np
 
 '''
-(c) 2020 - Telegram @apeteams | xapeteamsx@gmail.com
+(c) 2022 - Telegram @apeteams | xapeteamsx@gmail.com
 '''
 
 class Binongtot(object):
